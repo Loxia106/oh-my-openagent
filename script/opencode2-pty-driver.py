@@ -104,6 +104,12 @@ def main() -> int:
     btw_tab_sent = False
     btw_enter_sent = False
     btw_escape_sent = False
+    btw_question_submission_attempted = False
+    btw_question_prompt_visible = False
+    btw_question_result_visible = False
+    btw_question_route_started = False
+    btw_question_suggestion_visible = False
+    btw_after_cancel_alive = False
     if exit_status is None and sidebar_agent:
         send(b"\x10")
         drain(0.6)
@@ -168,6 +174,44 @@ def main() -> int:
             btw_escape_sent = True
             drain(0.8)
 
+        # Exercise the same native command from the palette after proving the
+        # empty slash-command dialog can be canceled without touching parent.
+        if btw_dialog and exit_status is None:
+            btw_after_cancel_alive = True
+            captured.clear()
+            send(b"\x15")
+            drain(0.3)
+            send(b"\x10")
+            drain(0.5)
+            send(b"BTW side conversation")
+            palette_deadline = time.monotonic() + 5.0
+            while time.monotonic() < palette_deadline and exit_status is None:
+                current = text().lower()
+                if "btw side conversation" in current and "fork the current session" in current:
+                    btw_question_suggestion_visible = True
+                    break
+                drain(0.2)
+            if btw_question_suggestion_visible and exit_status is None:
+                send(b"\r")
+                prompt_deadline = time.monotonic() + 10.0
+                while time.monotonic() < prompt_deadline and exit_status is None:
+                    current = text().lower()
+                    if "start a btw side conversation" in current or "what would you like to ask?" in current:
+                        btw_question_prompt_visible = True
+                        break
+                    drain(0.2)
+
+                if btw_question_prompt_visible and exit_status is None:
+                    send(b"OMO_QA_TUI_BTW\r")
+                    btw_question_submission_attempted = True
+                    btw_question_route_started = True
+                    result_deadline = time.monotonic() + 20.0
+                    while time.monotonic() < result_deadline and exit_status is None:
+                        if "omo_qa_tui_btw_result" in text().lower():
+                            btw_question_result_visible = True
+                            break
+                        drain(0.2)
+
     if exit_status is None:
         send(b"\x03")
         drain(4.0)
@@ -213,6 +257,12 @@ def main() -> int:
         "btwEnterSent": btw_enter_sent,
         "statusEscapeSent": status_escape_sent,
         "btwEscapeSent": btw_escape_sent,
+        "btwQuestionSubmissionAttempted": btw_question_submission_attempted,
+        "btwQuestionPromptVisible": btw_question_prompt_visible,
+        "btwQuestionResultVisible": btw_question_result_visible,
+        "btwQuestionRouteStarted": btw_question_route_started,
+        "btwQuestionSuggestionVisible": btw_question_suggestion_visible,
+        "btwAfterCancelAlive": btw_after_cancel_alive,
         "childExited": exit_status is not None,
         "childExitStatus": os.waitstatus_to_exitcode(exit_status) if exit_status is not None else None,
         "terminalClosed": terminal_closed,

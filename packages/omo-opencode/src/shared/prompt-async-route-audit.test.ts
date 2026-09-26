@@ -49,6 +49,10 @@ const RAW_PROMPT_ALLOWLIST = new Map<string, string>([
     "binds SDK Session.promptAsync into a narrow facade consumed only by gate-routed unstable-agent-babysitter dispatch; performs no direct dispatch itself",
   ],
   [
+    path.join(SOURCE_ROOT, "v2", "btw-dispatch.ts"),
+    "native OpenCode 2 gate owns fork plus exactly one child-session prompt, coalesces parent/question duplicates, keeps a positive 1s post-settlement hold for success and failure, and rejects dispatch after cleanup; focused tests exercise each invariant",
+  ],
+  [
     path.join(WORKSPACE_ROOT, "packages", "senpi-task", "src", "runners", "in-process", "child-handle.ts"),
     "drives a senpi CHILD AgentSession.prompt for spawned subagent turns; senpi-task cannot reach OpenCode session APIs (opencode-coupling audit) so the main-session injection invariant does not apply",
   ],

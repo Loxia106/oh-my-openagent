@@ -27,9 +27,10 @@ type MockRequest = {
 	messageRoles: string[]
 	systemContainsUltrawork: boolean
 	systemContainsTeamMode: boolean
-	teamModeMentions: string[]
+	systemContainsManualOnlySkillName: boolean
+	systemContainsTeamDependentSkillNames: string[]
+	teamModeMentionCount: number
 	availableSkillNames: string[]
-	systemExcerpt: string
 	toolCallNumber: number
 	responsePlan?: string
 }
@@ -78,13 +79,13 @@ function projectSessionCount(databasePath: string, directory: string): number | 
 	}
 }
 
-function projectSessions(databasePath: string, directory: string): Array<{ id: string; parentID?: string; agent?: string; title?: string }> {
+function projectSessions(databasePath: string, directory: string): Array<{ id: string; parentID?: string; forkSessionID?: string; agent?: string; title?: string }> {
 	if (!existsSync(databasePath)) return []
 	try {
 		const database = new Database(databasePath, { readonly: true, create: false })
 		try {
-			return database.query("SELECT id, parent_id AS parentID, agent, title FROM session_v2 WHERE directory = ? ORDER BY time_created ASC")
-				.all(directory) as Array<{ id: string; parentID?: string; agent?: string; title?: string }>
+			return database.query("SELECT id, parent_id AS parentID, fork_session_id AS forkSessionID, agent, title FROM session_v2 WHERE directory = ? ORDER BY time_created ASC")
+				.all(directory) as Array<{ id: string; parentID?: string; forkSessionID?: string; agent?: string; title?: string }>
 		} finally {
 			database.close()
 		}
@@ -144,13 +145,9 @@ function availableSkillNames(systemText: string): string[] {
 	return Array.from(section.matchAll(/<name>([^<]+)<\/name>/g), (match) => match[1].trim())
 }
 
-function teamModeMentions(systemText: string): string[] {
+function teamModeMentionCount(systemText: string): number {
 	const pattern = /\[team-mode\]|team[-_ ]mode|team_[a-z_]+/gi
-	return Array.from(systemText.matchAll(pattern), (match) => {
-		const start = Math.max(0, match.index - 70)
-		const end = Math.min(systemText.length, match.index + match[0].length + 100)
-		return systemText.slice(start, end).replace(/\s+/g, " ").trim()
-	}).slice(0, 20)
+	return Array.from(systemText.matchAll(pattern)).length
 }
 
 function toolCallResponse(name: string, args: unknown, id: string, model: string, streaming: boolean): Response {
@@ -341,16 +338,21 @@ async function main(): Promise<void> {
 				availableTeamTools: toolNames.filter((name) => name.toLowerCase().startsWith("team_")),
 				messageRoles: Array.isArray(body.messages) ? body.messages.flatMap((message) => message && typeof message === "object" && typeof (message as Record<string, unknown>).role === "string" ? [(message as Record<string, unknown>).role as string] : []) : [],
 				systemContainsUltrawork: /ultrawork|ultra.?work/i.test(systemText),
-				systemContainsTeamMode: teamModeMentions(systemText).length > 0,
-				teamModeMentions: teamModeMentions(systemText),
+				systemContainsTeamMode: teamModeMentionCount(systemText) > 0,
+				systemContainsManualOnlySkillName: /\bqa-manual-only\b/i.test(systemText),
+				systemContainsTeamDependentSkillNames: TEAM_DEPENDENT_SKILLS.filter((name) => new RegExp(`\\b${name}\\b`, "i").test(systemText)),
+				teamModeMentionCount: teamModeMentionCount(systemText),
 				availableSkillNames: availableSkillNames(systemText),
-				systemExcerpt: systemText.slice(-5_000),
 				toolCallNumber: modelCallNumber,
 			}
 			mockRequests.push(observation)
 			if (hasUserPromptMarker(body, "OMO_QA_CHILD")) {
 				observation.responsePlan = "native child completion: OMO_CHILD_OK"
 				return textResponse("OMO_CHILD_OK", `omoqa-${modelCallNumber}`, model, streaming)
+			}
+			if (hasUserPromptMarker(body, "OMO_QA_TUI_BTW")) {
+				observation.responsePlan = "native BTW child completion: OMO_QA_TUI_BTW_RESULT"
+				return textResponse("OMO_QA_TUI_BTW_RESULT", `omoqa-${modelCallNumber}`, model, streaming)
 			}
 
 			if (toolNames.length === 0) {
@@ -480,16 +482,15 @@ async function main(): Promise<void> {
 			pluginDirectory: PLUGIN_DIR,
 			projectDirectory: project,
 			apiLocation: agents.location.directory,
-			agentIds: agents.data.map((agent) => agent.id),
+			initialAgentIds: agents.data.map((agent) => agent.id),
 			pluginStates: pluginList.data.map(({ id, source, state }) => ({ id, source, state })),
 			configPluginEntries: configEntries.flatMap((entry) => entry.type === "document" ? [{ path: entry.path, plugins: entry.info.plugins }] : []),
 			registeredCommandNames: commands.data.map((command) => command.name),
-			registeredSkills: skills.data.map((skill) => skill.id),
+			initialSkillIds: skills.data.map((skill) => skill.id),
 			modelIds: modelList.data.map((model) => `${model.providerID}/${model.id}`),
 		}
-		const agentByID = new Map(agents.data.map((agent) => [agent.id, agent]))
-		const prometheus = agentByID.get("prometheus")
-		if (!agentByID.has("sisyphus") || !prometheus) throw new Error("Native agent registry did not expose Sisyphus and Prometheus.")
+		const initialAgentByID = new Map(agents.data.map((agent) => [agent.id, agent]))
+		if (!initialAgentByID.has("sisyphus") || !initialAgentByID.has("prometheus")) throw new Error("Native agent registry did not expose Sisyphus and Prometheus.")
 
 		const session = await client.session.create({ title: "OMO native v2 QA" })
 		await client.session.switchAgent({ sessionID: session.id, agent: "sisyphus" })
@@ -498,9 +499,18 @@ async function main(): Promise<void> {
 			sessionPromptResult = await client!.session.prompt({
 				sessionID: session.id,
 				text: "Use ULTRAWORK for this QA task. The phrase team-mode is a gate check; do not call any team tools. Read the fixture, save a completed todo, attempt a shell command and a file write, then delegate one explore task. Report the fixture line.",
-		})
-		sessionWaitResult = await client!.session.wait({ sessionID: session.id })
+			})
+			sessionWaitResult = await client!.session.wait({ sessionID: session.id })
 		})())
+		// The first session prompt waits for native plugin activation. Read the
+		// post-activation registry here so permission evidence includes plugin
+		// transforms that may not have run when the early catalog was queried.
+		const activatedAgentRegistry = await within("Read native agents after plugin activation", client.agent.list())
+		const activatedSkills = await within("Read native skills after plugin activation", client.skill.list())
+		const agentByID = new Map(activatedAgentRegistry.data.map((agent) => [agent.id, agent]))
+		const prometheus = agentByID.get("prometheus")
+		const sisyphus = agentByID.get("sisyphus")
+		if (!sisyphus || !prometheus) throw new Error("Activated native agent registry did not expose Sisyphus and Prometheus.")
 		const messages = await within("Read native session transcript", client.message.list({ sessionID: session.id }))
 		const nativeSessions = projectSessions(isolatedDbPath, project)
 		const childRow = nativeSessions.find((candidate) => candidate.parentID === session.id)
@@ -508,8 +518,6 @@ async function main(): Promise<void> {
 		const childMessages = childRow ? await within("Read native child transcript", client.message.list({ sessionID: childRow.id })) : undefined
 		const messageText = JSON.stringify(messages)
 		const transcriptToolNames = [...new Set(Array.from(messageText.matchAll(/"name":"([A-Za-z0-9_-]+)"/g), (match) => match[1]))]
-		const sisyphus = agentByID.get("sisyphus")
-		if (!sisyphus) throw new Error("Native agent registry did not expose Sisyphus.")
 		const permissions = compactPermissions(prometheus)
 		const sisyphusPermissions = compactPermissions(sisyphus)
 		const requestSettings = (sisyphus as unknown as { request?: { settings?: Record<string, unknown> } }).request?.settings
@@ -538,16 +546,8 @@ async function main(): Promise<void> {
 		const deniedSideEffectsAbsent = !existsSync(join(project, "shell-deny-side-effect")) && !existsSync(join(project, "edit-deny-side-effect.txt"))
 		const contextInjected = mockRequests.some((request) => request.systemContainsUltrawork)
 		const settingsSent = mockRequests.some((request) => request.temperature === 0.23 && request.top_p === 0.61 && request.max_completion_tokens === 317)
-		const automaticallyAvailableSkills = new Set(mockRequests.flatMap((request) => request.availableSkillNames))
-		const expectedSkillsInPrompt = ["frontend", "git-master"].every((skillName) => automaticallyAvailableSkills.has(skillName))
-		const manualSkillRegistered = skills.data.some((skill) => String(skill.id) === "qa-manual-only")
-		const manualSkillOmittedFromPrompt = !automaticallyAvailableSkills.has("qa-manual-only")
-		const teamDependentSkillsInRegistry = skills.data.map((skill) => String(skill.id)).filter((name) => TEAM_DEPENDENT_SKILLS.includes(name as typeof TEAM_DEPENDENT_SKILLS[number]))
-		const teamDependentSkillsInPrompt = Array.from(automaticallyAvailableSkills).filter((name) => TEAM_DEPENDENT_SKILLS.includes(name as typeof TEAM_DEPENDENT_SKILLS[number]))
-		const teamDependentSkillsAbsent = teamDependentSkillsInRegistry.length === 0 && teamDependentSkillsInPrompt.length === 0
-		const teamModeSkillOmittedFromPrompt = !automaticallyAvailableSkills.has("team-mode")
-		const teamModePromptSuppressed = mockRequests.every((request) => !request.systemContainsTeamMode && request.availableTeamTools.length === 0) && teamDependentSkillsAbsent
 		const tuiProjectSessionsBefore = projectSessionCount(isolatedDbPath, project)
+		const parentMessagesBeforeTui = JSON.stringify((await client.message.list({ sessionID: session.id })).data)
 		const mockCallsBeforeTui = mockRequests.length
 		const tuiOutputPath = join(EVIDENCE, "tui-pty.json")
 		const tuiCommand = [OPENCODE_BIN, "--server", baseUrl, "--session", session.id, project]
@@ -593,8 +593,36 @@ async function main(): Promise<void> {
 		const tuiPluginLoadSucceeded = tuiPty.pluginLoadFailedDiagnostic !== true
 		const tuiCleanup = tuiPty.childExited === true && [0, 130, -2, -15].includes(Number(tuiPty.childExitStatus))
 		const tuiProjectSessionsAfter = projectSessionCount(isolatedDbPath, project)
-		const tuiSessionsUnchanged = tuiProjectSessionsBefore !== null && tuiProjectSessionsBefore === tuiProjectSessionsAfter
-		const tuiModelCallsUnchanged = mockRequests.length === mockCallsBeforeTui
+		const tuiSessionsIncremented = tuiProjectSessionsBefore !== null && tuiProjectSessionsAfter === tuiProjectSessionsBefore + 1
+		const parentMessagesAfterTui = await client.message.list({ sessionID: session.id })
+		const tuiParentHistoryUnchanged = JSON.stringify(parentMessagesAfterTui.data) === parentMessagesBeforeTui
+		const tuiSessions = projectSessions(isolatedDbPath, project)
+		const btwChildRow = tuiSessions.find((candidate) => candidate.forkSessionID === session.id && candidate.id !== session.id)
+		const btwChild = btwChildRow ? await client.session.get({ sessionID: btwChildRow.id }) : undefined
+		const btwChildMessages = btwChildRow ? await client.message.list({ sessionID: btwChildRow.id }) : undefined
+		const btwChildTranscript = JSON.stringify(btwChildMessages?.data ?? [])
+		const btwProviderRequestObserved = mockRequests.some((request) => request.responsePlan === "native BTW child completion: OMO_QA_TUI_BTW_RESULT")
+		const tuiBtwRoundtrip = tuiPty.btwQuestionSubmissionAttempted === true
+			&& tuiPty.btwQuestionResultVisible === true
+			&& btwChildRow?.forkSessionID === session.id
+			&& btwChildRow?.id !== session.id
+			&& btwChildTranscript.includes("OMO_QA_TUI_BTW")
+			&& btwChildTranscript.includes("OMO_QA_TUI_BTW_RESULT")
+			&& btwProviderRequestObserved
+		const tuiModelCallObserved = mockRequests.length > mockCallsBeforeTui && btwProviderRequestObserved
+		const automaticallyAvailableSkills = new Set(mockRequests.flatMap((request) => request.availableSkillNames))
+		const expectedSkillsInPrompt = ["frontend", "git-master"].every((skillName) => automaticallyAvailableSkills.has(skillName))
+		const manualSkillRegistered = activatedSkills.data.some((skill) => String(skill.id) === "qa-manual-only")
+		const manualSkillOmittedFromSystem = mockRequests.every((request) => !request.systemContainsManualOnlySkillName)
+		const manualSkillOmittedFromPrompt = !automaticallyAvailableSkills.has("qa-manual-only") && manualSkillOmittedFromSystem
+		const teamDependentSkillsInRegistry = activatedSkills.data.map((skill) => String(skill.id)).filter((name) => TEAM_DEPENDENT_SKILLS.includes(name as typeof TEAM_DEPENDENT_SKILLS[number]))
+		const teamDependentSkillsInPrompt = Array.from(automaticallyAvailableSkills).filter((name) => TEAM_DEPENDENT_SKILLS.includes(name as typeof TEAM_DEPENDENT_SKILLS[number]))
+		const teamDependentSkillNamesInSystem = [...new Set(mockRequests.flatMap((request) => request.systemContainsTeamDependentSkillNames))]
+		const teamDependentSkillsAbsent = teamDependentSkillsInRegistry.length === 0
+			&& teamDependentSkillsInPrompt.length === 0
+			&& teamDependentSkillNamesInSystem.length === 0
+		const teamModeSkillOmittedFromPrompt = !automaticallyAvailableSkills.has("team-mode")
+		const teamModePromptSuppressed = mockRequests.every((request) => !request.systemContainsTeamMode && request.availableTeamTools.length === 0) && teamDependentSkillsAbsent
 		tuiSmoke = {
 			command: tuiCommand,
 			pythonPtyDriver: join(ROOT, "script", "opencode2-pty-driver.py"),
@@ -621,6 +649,13 @@ async function main(): Promise<void> {
 			omoStatusPaletteOpened: tuiPty.omoStatusPaletteOpened === true,
 			btwDialogRendered: tuiBtwDialogRendered,
 			btwSuggestionVisible: tuiPty.btwSuggestionVisible === true,
+			btwQuestionSubmissionAttempted: tuiPty.btwQuestionSubmissionAttempted === true,
+			btwQuestionPromptVisible: tuiPty.btwQuestionPromptVisible === true,
+			btwQuestionResultVisible: tuiPty.btwQuestionResultVisible === true,
+			btwChild: btwChild ? { id: btwChild.id, parentID: btwChildRow?.parentID, forkSessionID: btwChildRow?.forkSessionID, agent: btwChild.agent, outcome: btwChild.outcome } : null,
+			btwChildTranscript,
+			btwProviderRequestObserved,
+			tuiBtwRoundtrip,
 			pluginLoadSucceeded: tuiPluginLoadSucceeded,
 			statusEscapeSent: tuiPty.statusEscapeSent === true,
 			btwEscapeSent: tuiPty.btwEscapeSent === true,
@@ -628,17 +663,19 @@ async function main(): Promise<void> {
 			processExitStatus: tuiPty.childExitStatus,
 			projectSessionCountBefore: tuiProjectSessionsBefore,
 			projectSessionCountAfter: tuiProjectSessionsAfter,
-			projectSessionsUnchanged: tuiSessionsUnchanged,
+			projectSessionsIncremented: tuiSessionsIncremented,
+			parentMessagesUnchanged: tuiParentHistoryUnchanged,
 			mockProviderCallsBefore: mockCallsBeforeTui,
 			mockProviderCallsAfter: mockRequests.length,
-			mockProviderCallsUnchanged: tuiModelCallsUnchanged,
+			mockProviderCallObserved: tuiModelCallObserved,
 		}
 		outcome = {
 			runtime: version,
 			pluginDirectory: PLUGIN_DIR,
 			projectDirectory: project,
 			apiLocation: agents.location.directory,
-			agentIds: agents.data.map((agent) => agent.id),
+			initialAgentIds: agents.data.map((agent) => agent.id),
+			postActivationAgentIds: activatedAgentRegistry.data.map((agent) => agent.id),
 			nativeAgentPermissions: {
 				prometheus: prometheus.permissions ?? [],
 				sisyphus: sisyphus.permissions ?? [],
@@ -646,7 +683,8 @@ async function main(): Promise<void> {
 			prometheusPermissions: permissions.permissions,
 			sisyphusPermissions: sisyphusPermissions.permissions,
 			registeredCommandNames: commands.data.map((command) => command.name),
-			registeredSkills: skills.data.map((skill) => skill.id),
+			initialSkillIds: skills.data.map((skill) => skill.id),
+			postActivationSkillIds: activatedSkills.data.map((skill) => skill.id),
 			modelIds: modelList.data.map((model) => `${model.providerID}/${model.id}`),
 			requestSettingsInAgentRegistry: requestSettings ?? {},
 			mockRequests,
@@ -675,8 +713,10 @@ async function main(): Promise<void> {
 				expectedSkillsInPrompt,
 				manualSkillRegistered,
 				manualSkillOmittedFromPrompt,
+				manualSkillOmittedFromSystem,
 				teamDependentSkillsInRegistry,
 				teamDependentSkillsInPrompt,
+				teamDependentSkillNamesInSystem,
 				teamDependentSkillsAbsent,
 				teamModePromptSuppressed,
 				teamModeSkillOmittedFromPrompt,
@@ -694,6 +734,7 @@ async function main(): Promise<void> {
 				expectedSkillsInPrompt,
 				manualSkillRegistered,
 				manualSkillOmittedFromPrompt,
+				manualSkillOmittedFromSystem,
 				teamDependentSkillsAbsent,
 				teamModePromptSuppressed,
 				taskRoundtrip,
@@ -705,9 +746,11 @@ async function main(): Promise<void> {
 				tuiStatusDialogRendered,
 				tuiBtwDialogRendered,
 				tuiDialogsDismissed,
+				tuiBtwRoundtrip,
+				tuiParentHistoryUnchanged,
 				tuiCleanup,
-				tuiSessionsUnchanged,
-				tuiModelCallsUnchanged,
+				tuiSessionsIncremented,
+				tuiModelCallObserved,
 			},
 			isolation: {
 				isolatedXdgDataHome: xdgData,
@@ -720,7 +763,7 @@ async function main(): Promise<void> {
 			},
 			process: { opencodePid: serverProcess.pid, mockProviderPort: mockModel.port },
 		}
-		if (!allDenied || !deniedTools || !deniedSideEffectsAbsent || !readRoundtrip || !todoRoundtrip || !taskRoundtrip || !childProviderRequestSeen || !nativeChild?.parentID || !nativeChildOutput.includes("OMO_CHILD_OK") || !contextInjected || !settingsSent || !expectedSkillsInPrompt || !manualSkillRegistered || !manualSkillOmittedFromPrompt || !teamDependentSkillsAbsent || !teamModePromptSuppressed || !messageText.includes("OMO_V2_QA_COMPLETE") || tuiDriverExitCode !== 0 || !tuiSidebarRendered || !tuiPluginLoadSucceeded || !tuiStatusDialogRendered || !tuiBtwDialogRendered || !tuiDialogsDismissed || !tuiCleanup || !tuiSessionsUnchanged || !tuiModelCallsUnchanged) {
+		if (!allDenied || !deniedTools || !deniedSideEffectsAbsent || !readRoundtrip || !todoRoundtrip || !taskRoundtrip || !childProviderRequestSeen || !nativeChild?.parentID || !nativeChildOutput.includes("OMO_CHILD_OK") || !contextInjected || !settingsSent || !expectedSkillsInPrompt || !manualSkillRegistered || !manualSkillOmittedFromPrompt || !teamDependentSkillsAbsent || !teamModePromptSuppressed || !messageText.includes("OMO_V2_QA_COMPLETE") || tuiDriverExitCode !== 0 || !tuiSidebarRendered || !tuiPluginLoadSucceeded || !tuiStatusDialogRendered || !tuiBtwDialogRendered || !tuiDialogsDismissed || !tuiBtwRoundtrip || !tuiParentHistoryUnchanged || !tuiCleanup || !tuiSessionsIncremented || !tuiModelCallObserved) {
 			throw new Error(`One or more native runtime assertions failed: ${JSON.stringify(outcome.checks)}`)
 		}
 	} catch (error) {

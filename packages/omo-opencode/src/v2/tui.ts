@@ -1,6 +1,7 @@
 import type { Context as TuiContext } from "@opencode/plugin/tui/plugin"
 import type { JSX } from "@opentui/solid/jsx-runtime"
 import { createComponent, createSignal } from "solid-js"
+import { createNativeBtwDispatcher } from "./btw-dispatch"
 import { loadV2Config } from "./config"
 
 type SolidRuntime = {
@@ -53,7 +54,12 @@ function btwQuestion(input: string | undefined): string {
 	return (input ?? "").replace(/^\s*\/(?:omo-btw|side)(?:\s+|$)/i, "").trim()
 }
 
-async function startBtw(ctx: TuiContext, rawInput?: string): Promise<void> {
+async function startBtw(
+	ctx: TuiContext,
+	dispatchBtw: ReturnType<typeof createNativeBtwDispatcher>["dispatch"],
+	isActive: () => boolean,
+	rawInput?: string,
+): Promise<void> {
 	const route = ctx.ui.router.current()
 	if (route.type !== "session") {
 		ctx.ui.toast.show({ title: "BTW unavailable", message: "Open a session before starting a side conversation.", variant: "warning" })
@@ -70,10 +76,11 @@ async function startBtw(ctx: TuiContext, rawInput?: string): Promise<void> {
 	if (!question) return
 
 	try {
-		const fork = await ctx.client.session.fork({ sessionID: route.sessionID })
-		await ctx.client.session.prompt({ sessionID: fork.id, text: question })
-		if (!ctx.ui.tabs.focus(fork.id)) ctx.ui.router.navigate({ type: "session", sessionID: fork.id })
+		const childSessionID = await dispatchBtw({ parentSessionID: route.sessionID, question })
+		if (!isActive()) return
+		if (!ctx.ui.tabs.focus(childSessionID)) ctx.ui.router.navigate({ type: "session", sessionID: childSessionID })
 	} catch (error) {
+		if (!isActive()) return
 		ctx.ui.toast.show({
 			title: "Unable to start BTW",
 			message: error instanceof Error ? error.message : String(error),
@@ -91,6 +98,8 @@ export async function setupV2Tui(ctx: TuiContext): Promise<() => void> {
 	let disposeSlot: (() => void) | undefined
 	let disposeKeymapSlot: (() => void) | undefined
 	let disposeEvents: (() => void) | undefined
+	let active = true
+	const btwDispatcher = createNativeBtwDispatcher(ctx.client.session)
 
 	// Keymap.layer reads the host's Solid Keymap context and registers cleanup on
 	// the current component owner. Plugin setup runs outside that provider, so the
@@ -139,7 +148,7 @@ export async function setupV2Tui(ctx: TuiContext): Promise<() => void> {
 			// OpenCode has its own /btw command. Keep OMO's forked side-session
 			// behavior under a distinct slash name while retaining /side.
 			slash: { name: "omo-btw", aliases: ["side"], arguments: true as const },
-			run: (input?: string) => startBtw(ctx, input),
+			run: (input?: string) => startBtw(ctx, btwDispatcher.dispatch, () => active, input),
 		},
 	]
 
@@ -168,6 +177,8 @@ export async function setupV2Tui(ctx: TuiContext): Promise<() => void> {
 	}
 
 	return () => {
+		active = false
+		btwDispatcher.dispose()
 		disposeEvents?.()
 		disposeSlot?.()
 		disposeKeymapSlot?.()

@@ -91,7 +91,10 @@ describe("native v2 lifecycle hooks", () => {
 		push("session.execution.started", "ses-success")
 		push("session.execution.succeeded", "ses-success")
 		push("session.idle", "ses-success")
+		push("session.idle", "ses-success")
 		await waitUntil(() => synthetics.length === 1)
+		await new Promise((resolve) => setTimeout(resolve, 30))
+		expect(synthetics).toHaveLength(1)
 		expect(synthetics[0]).toMatchObject({
 			sessionID: "ses-success",
 			delivery: "queue",
