@@ -202,7 +202,13 @@ export function toV2PermissionRules(
 
 function nativeSettings(config: AgentConfig): Record<string, unknown> {
   const source = config as AgentConfig & Record<string, unknown>
-  const settings: Record<string, unknown> = {}
+  const providerOptions = source.providerOptions
+  const settings: Record<string, unknown> = providerOptions && typeof providerOptions === "object" && !Array.isArray(providerOptions)
+    ? { ...(providerOptions as Record<string, unknown>) }
+    : {}
+  // Precedence is deliberate: flat providerOptions seed the native option bag;
+  // mapped top-level generation/reasoning fields override them; the existing
+  // native adapter's `options` object remains the final OMO override.
   if (source.temperature !== undefined) settings.temperature = source.temperature
   if (source.top_p !== undefined) settings.topP = source.top_p
   if (source.maxTokens !== undefined) settings.maxTokens = source.maxTokens
@@ -413,9 +419,6 @@ function toNativeAgentConfig(
   const source = config as AgentConfig & Record<string, unknown>
   const model = toV2ModelRef(typeof source.model === "string" ? source.model : undefined, typeof source.variant === "string" ? source.variant : undefined)
   const settings = nativeSettings(config)
-  const body = source.providerOptions && typeof source.providerOptions === "object"
-    ? source.providerOptions as Record<string, unknown>
-    : {}
   const permissions = toV2PermissionRules(config, name, onPermissionConflict)
   return {
     id: name as NativeAgentInfo["id"],
@@ -430,7 +433,9 @@ function toNativeAgentConfig(
     request: {
       settings,
       headers: {},
-      body,
+      // Provider options are bridged through request.settings → SessionContext.options.
+      // Keep request.body available for OpenCode-owned host configuration only.
+      body: {},
     },
     permissions,
   }
