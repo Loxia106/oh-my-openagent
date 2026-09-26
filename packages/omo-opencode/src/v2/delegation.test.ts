@@ -437,6 +437,85 @@ describe("native V2 delegation", () => {
     }
   })
 
+  test("resumes an owned category task without selectors and never weakens its restrictions or model", async () => {
+    const instance = await harness({
+      config: { categories: {
+        restricted: { tools: { todowrite: false } },
+        broad: { tools: { todowrite: true } },
+      } },
+      sessions: { "ses-child": {
+        id: "ses-child",
+        parentID: "ses-parent",
+        agent: "sisyphus-junior",
+        model: { providerID: "qa", id: "stored-model" },
+        time: { created: 100, updated: 100 },
+      } },
+      nativeExecute: async (_args, context) => {
+        await context.progress({ sessionID: "ses-child" })
+        return { output: { sessionID: "ses-child", status: "completed", output: "continued" }, content: "continued" }
+      },
+    })
+    const task = instance.editor.get("task")!
+    const context = toolContext()
+    const expectTodoDenied = async () => {
+      const permission = { sessionID: "ses-child", action: "todowrite", resources: [], effect: "allow" }
+      await instance.permissionHooks[0]!(permission)
+      expect(permission.effect).toBe("deny")
+    }
+    try {
+      await task.execute({ category: "restricted", prompt: "Start restricted task" }, context)
+      expect(await instance.runs.get("ses-child")).toMatchObject({ blockedActions: ["todowrite"] })
+
+      await task.execute({ task_id: "ses-child", prompt: "Continue without a selector" }, context)
+      expect(instance.nativeCalls.at(-1)).toMatchObject({ agent: "sisyphus-junior", sessionID: "ses-child" })
+      expect(instance.nativeCalls.at(-1)).not.toHaveProperty("model")
+      await expectTodoDenied()
+
+      await task.execute({ task_id: "ses-child", subagent_type: "sisyphus-junior", prompt: "Continue by agent" }, context)
+      expect(instance.nativeCalls.at(-1)).toMatchObject({ agent: "sisyphus-junior", sessionID: "ses-child" })
+      expect(instance.nativeCalls.at(-1)).not.toHaveProperty("model")
+      await expectTodoDenied()
+
+      await task.execute({ task_id: "ses-child", category: "broad", prompt: "Continue by broader category" }, context)
+      expect(instance.nativeCalls.at(-1)).toMatchObject({ agent: "sisyphus-junior", sessionID: "ses-child" })
+      expect(instance.nativeCalls.at(-1)).not.toHaveProperty("model")
+      await expectTodoDenied()
+      expect(new Set((await instance.runs.get("ses-child"))?.blockedActions)).toEqual(new Set(["todowrite"]))
+    } finally {
+      await instance.runtime.cleanup()
+    }
+  })
+
+  test("revalidates the inferred child agent and rejects foreign or different-agent resumes", async () => {
+    const child = { id: "ses-child", parentID: "ses-parent", agent: "explore", time: { created: 1, updated: 1 } }
+    const disabled = await harness({
+      config: { disabled_agents: ["explore"] },
+      sessions: { "ses-child": child },
+    })
+    try {
+      await expect(disabled.editor.get("task")!.execute({ task_id: "ses-child", prompt: "Continue" }, toolContext()))
+        .rejects.toThrow("disabled_agents")
+      expect(disabled.nativeCalls).toHaveLength(0)
+    } finally {
+      await disabled.runtime.cleanup()
+    }
+
+    const instance = await harness({ sessions: {
+      "ses-child": child,
+      "ses-foreign": { id: "ses-foreign", parentID: "ses-other", agent: "explore", time: { created: 1, updated: 1 } },
+    } })
+    try {
+      await expect(instance.editor.get("task")!.execute({
+        task_id: "ses-child", subagent_type: "librarian", prompt: "Change agent",
+      }, toolContext())).rejects.toThrow("different agent")
+      await expect(instance.editor.get("task")!.execute({ task_id: "ses-foreign", prompt: "Foreign" }, toolContext()))
+        .rejects.toThrow("not a child")
+      expect(instance.nativeCalls).toHaveLength(0)
+    } finally {
+      await instance.runtime.cleanup()
+    }
+  })
+
   test("cancels only verified owned child sessions and records interruption", async () => {
     const storage = memoryStorage()
     const runs = createV2SubagentRunState(storage)

@@ -430,6 +430,10 @@ function registerToolAliases(input: {
       if (existing.agent !== agentID) {
         throw new ToolError({ message: `Cannot continue session ${request.sessionID} as a different agent; this would change its permission profile.` })
       }
+      const existingRun = await runs.get(request.sessionID)
+      if (existingRun && existingRun.parentSessionID !== toolContext.sessionID) {
+        throw new ToolError({ message: `Session ${request.sessionID} is not owned by this parent session.` })
+      }
     }
 
     const inheritedProgress: ToolContext["progress"] = async (metadata) => {
@@ -455,7 +459,7 @@ function registerToolAliases(input: {
       agent: agentID,
       description: request.description,
       prompt: request.prompt,
-      ...(request.model ? { model: request.model } : {}),
+      ...(!request.sessionID && request.model ? { model: request.model } : {}),
       ...(request.sessionID ? { sessionID: request.sessionID } : {}),
       ...(request.background ? { background: true } : {}),
     }
@@ -470,15 +474,29 @@ function registerToolAliases(input: {
   if (!toolDisabled(config, "task")) {
     addV2Tool(editor, {
       name: "task",
-      description: "Delegate a task to an OMO subagent. Provide exactly one of category or subagent_type. Use background mode for independent work; the result includes the native child sessionID.",
+      description: "Delegate a new task with exactly one of category or subagent_type. To continue a child, pass its task_id and prompt without either selector; the stored child agent, model, and tool restrictions are preserved. Use background mode for independent work; the result includes the native child sessionID.",
       input: taskInput,
       output: native.output,
       options: { codemode: false, permission: "task" },
       execute: async (args, context) => {
         if (args.category && args.subagent_type) throw new ToolError({ message: "Pass either category or subagent_type, not both." })
-        if (!args.category && !args.subagent_type) throw new ToolError({ message: "Pass a category or subagent_type." })
+        if (!args.category && !args.subagent_type && !args.task_id) {
+          throw new ToolError({ message: "Pass a category or subagent_type when starting a task." })
+        }
         const runInBackground = args.run_in_background === true
         let agent = args.subagent_type ?? "sisyphus-junior"
+        if (!args.category && !args.subagent_type && args.task_id) {
+          let existing: Awaited<ReturnType<typeof ctx.session.get>>
+          try {
+            existing = await readOwnedChildSession(ctx, context.sessionID, args.task_id)
+          } catch (error) {
+            throw new ToolError({ message: error instanceof Error ? error.message : String(error) })
+          }
+          if (typeof existing.agent !== "string" || !existing.agent) {
+            throw new ToolError({ message: `Cannot infer the agent for owned child session ${args.task_id}.` })
+          }
+          agent = existing.agent
+        }
         let model: string | undefined
         let categoryAppend: string | undefined
         let blockedActions: string[] = []
@@ -490,7 +508,8 @@ function registerToolAliases(input: {
             throw new ToolError({ message: `Unknown or disabled category "${categoryName}". Available categories: ${names}.` })
           }
           agent = "sisyphus-junior"
-          model = await resolveCategoryModel(ctx, categoryName, categoryConfig, config.categories?.[categoryName])
+          // A resumed native session keeps its existing model; resolve category model only for a new child.
+          model = args.task_id ? undefined : await resolveCategoryModel(ctx, categoryName, categoryConfig, config.categories?.[categoryName])
           const userPromptAppend = config.categories?.[categoryName]?.prompt_append
           const modelPromptAppend = CATEGORY_PROMPT_APPEND_RESOLVERS[categoryName]?.(model)
           categoryAppend = [
