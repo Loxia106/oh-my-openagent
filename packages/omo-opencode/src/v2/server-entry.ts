@@ -1,6 +1,3 @@
-import { setupV2 } from "./setup"
+import { opencode2EffectPlugin } from "./effect-entry"
 
-export default {
-  id: "oh-my-openagent",
-  setup: setupV2,
-}
+export default opencode2EffectPlugin

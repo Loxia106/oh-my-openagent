@@ -182,6 +182,7 @@
     "commander": "^15.0.0",
     "detect-libc": "^2.1.2",
     "diff": "^9.0.0",
+    "effect": "4.0.0-rc.112",
     "js-yaml": "^5.4.2",
     "jsonc-parser": "^3.3.1",
     "picocolors": "^1.1.1",

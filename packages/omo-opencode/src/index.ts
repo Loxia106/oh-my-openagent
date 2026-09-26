@@ -1,13 +1,16 @@
 import type { PluginModule } from "@opencode-ai/plugin"
 import type { Plugin } from "@opencode/plugin"
+import type { Plugin as NativePlugin } from "@opencode/plugin/effect/plugin"
 import { createPluginModule } from "./testing/create-plugin-module"
+import { opencode2EffectPlugin } from "./v2/effect-entry"
 import { setupV2 } from "./v2/setup"
 
 const legacyModule = createPluginModule()
-const pluginModule: PluginModule & Plugin.Plugin = {
+const pluginModule: PluginModule & Plugin.Plugin & NativePlugin = {
   ...legacyModule,
   id: "oh-my-openagent",
   setup: setupV2,
+  effect: opencode2EffectPlugin.effect,
 }
 
 export const omoPlugin = legacyModule.server

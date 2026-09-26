@@ -15,6 +15,7 @@ const external = [
   "@opencode/ai", "@opencode/ai/*",
   "@opencode-ai/plugin", "@opencode-ai/plugin/*",
   "@opencode-ai/sdk", "@opencode-ai/sdk/*",
+  "effect", "effect/*",
   "@opentui/core", "@opentui/solid", "@opentui/keymap",
   "solid-js", "solid-js/*",
 ]

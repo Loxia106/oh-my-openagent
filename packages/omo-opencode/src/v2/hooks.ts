@@ -3,6 +3,7 @@ import type { OhMyOpenCodeConfig } from "../config"
 import { registerV2ContextHooks } from "./context-hooks"
 import { registerV2InstructionHooks } from "./instruction-hooks"
 import { registerV2LifecycleHooks } from "./lifecycle"
+import { registerV2RecoveryHooks } from "./recovery-hooks"
 import { registerV2SafetyHooks } from "./safety-hooks"
 import { registerV2ToolHooks } from "./tool-hooks"
 
@@ -26,6 +27,7 @@ export async function registerV2Hooks(ctx: Plugin.Context, config: OhMyOpenCodeC
 		cleanups.push(await registerV2ToolHooks(ctx, config))
 		cleanups.push(await registerV2SafetyHooks(ctx, config))
 		cleanups.push(await registerV2InstructionHooks(ctx, config))
+		cleanups.push(await registerV2RecoveryHooks(ctx, config))
 		cleanups.push(await registerV2LifecycleHooks(ctx, config))
 	} catch (error) {
 		const cleanupErrors = await unwind(cleanups)
