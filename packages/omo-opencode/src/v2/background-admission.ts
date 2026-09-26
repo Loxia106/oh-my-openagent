@@ -207,6 +207,21 @@ function isNewerIdle(info: SessionInfo, lease: StoredLease): boolean {
 		isAdmissionOutcome(info.outcome)
 }
 
+function isFirstGenerationNewIdle(info: SessionInfo, lease: StoredLease): boolean {
+	// Admission covers one wrapped subagent invocation. Later unwrapped prompts do
+	// not acquire a slot here; each wrapped resume owns a distinct lease generation.
+	// A new-mode lease creates a fresh child after reservation. Its first terminal
+	// idle can prove this invocation completed even when bind had no prior idle value.
+	// Resumes keep the stricter baseline comparison because their outcome is historical.
+	return lease.mode === "new" && lease.generation === 1 && !lease.adoptedUntrackedResume &&
+		lease.baselineIdle === null && isFiniteNumber(info.time.idle) && info.time.idle >= lease.createdAt &&
+		isAdmissionOutcome(info.outcome)
+}
+
+function isTerminalIdleForLease(info: SessionInfo, lease: StoredLease): boolean {
+	return isNewerIdle(info, lease) || isFirstGenerationNewIdle(info, lease)
+}
+
 /**
  * Per-plugin-instance admission policy. The caller acquires before invoking
  * native `subagent`, calls beginCreate immediately before invocation, awaits
@@ -401,7 +416,7 @@ export function createV2BackgroundAdmission(
 			failClosed(`Persisted lease ${lease.leaseID} resolves to a session outside its recorded parent/project/location. Keep it reserved and inspect the plugin-storage record.`)
 			return
 		}
-		if (isNewerIdle(info, lease)) {
+		if (isTerminalIdleForLease(info, lease)) {
 			await markTerminal(lease.leaseID, lease.generation, info.outcome!, lease.lastTerminalSeq, lease.terminalEventID)
 			return
 		}
@@ -896,7 +911,7 @@ export function createV2BackgroundAdmission(
 			}
 			return
 		}
-		if (info.id !== sessionID || info.parentID !== lease.parentSessionID || info.projectID !== ctx.location.project.id || !sessionMatchesContext(info) || !isNewerIdle(info, lease)) return
+		if (info.id !== sessionID || info.parentID !== lease.parentSessionID || info.projectID !== ctx.location.project.id || !sessionMatchesContext(info) || !isTerminalIdleForLease(info, lease)) return
 		await serialized(() => markTerminal(lease.leaseID, lease.generation, info.outcome!, seq, event.id ?? null))
 	}
 

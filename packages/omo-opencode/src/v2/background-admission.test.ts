@@ -429,6 +429,137 @@ describe("native V2 background admission", () => {
 		await held.dispose()
 	})
 
+	test("restart releases an offline-completed fresh generation with no prior idle marker", async () => {
+		const h = harness({
+			config: { defaultConcurrency: 1 } as BackgroundTaskConfig,
+			seed: {
+				"ses-restored": info("ses-restored", {
+					parentID: rootID,
+					outcome: "succeeded",
+					time: { created: 1, updated: 100, idle: 100 },
+				}),
+			},
+		})
+		h.values.set(keyPrefix + "restored", persistedLease({ baselineIdle: null, createdAt: 100 }))
+		const manager = h.create()
+		await manager.ready()
+		expect((await manager.diagnostics()).activeLeases).toEqual([])
+		expect((h.values.get(keyPrefix + "restored") as { status?: string })?.status).toBe("terminal")
+
+		// The completed invocation releases its model slot, so the next request must not queue.
+		const next = manager.acquire({ parentSessionID: rootID, model: chosenModel, mode: "new" })
+		const admitted = next.then(
+			(ticket) => ({ kind: "admitted" as const, ticket }),
+			(error) => ({ kind: "rejected" as const, error }),
+		)
+		let timeout: ReturnType<typeof setTimeout> | undefined
+		const queued = new Promise<{ kind: "queued" }>((resolve) => {
+			timeout = setTimeout(() => resolve({ kind: "queued" }), 250)
+		})
+		const result = await Promise.race([admitted, queued])
+		if (timeout) clearTimeout(timeout)
+		if (result.kind === "admitted") await result.ticket.rollback()
+		await manager.dispose()
+		expect(result.kind).toBe("admitted")
+	})
+
+	test("reconciles a fresh terminal event when its start event was missed", async () => {
+		const h = harness({ config: { defaultConcurrency: 1 } as BackgroundTaskConfig })
+		const manager = h.create()
+		await manager.ready()
+		const ticket = await manager.acquire({ parentSessionID: rootID, model: chosenModel, mode: "new" })
+		await ticket.beginCreate()
+		const childID = "ses-start-event-missed"
+		h.sessions.set(childID, info(childID, {
+			parentID: rootID,
+			time: { created: 1, updated: 1 },
+		}))
+		await ticket.bind(childID)
+		const stored = h.values.get(keyPrefix + encodeURIComponent(ticket.leaseID)) as { createdAt: number; baselineIdle: number | null }
+		expect(stored.baselineIdle).toBeNull()
+		h.sessions.get(childID)!.outcome = "succeeded"
+		h.sessions.get(childID)!.time = { created: 1, updated: stored.createdAt, idle: stored.createdAt }
+		await manager.observeExecution(executionEvent("session.execution.succeeded", childID, 2))
+		expect((await manager.diagnostics()).activeLeases).toEqual([])
+		await manager.dispose()
+	})
+
+	test("keeps a null-baseline fresh lease held without a terminal after reservation", async () => {
+		const cases = [
+			{
+				outcome: "succeeded",
+				time: { created: 1, updated: 99, idle: 99 },
+			},
+			{
+				time: { created: 1, updated: 99 },
+			},
+			{
+				time: { created: 1, updated: 100, idle: 100 },
+			},
+		]
+		for (const session of cases) {
+			const h = harness({ seed: { "ses-restored": info("ses-restored", { parentID: rootID, ...session }) } })
+			h.values.set(keyPrefix + "restored", persistedLease({ baselineIdle: null, createdAt: 100 }))
+			const manager = h.create()
+			await manager.ready()
+			expect((await manager.diagnostics()).activeLeases.map((lease) => lease.leaseID)).toContain("restored")
+			await manager.dispose()
+		}
+	})
+
+	test("keeps null-baseline resume and adopted-resume leases held", async () => {
+		const cases = [
+			{ mode: "resume", generation: 2, adoptedUntrackedResume: false },
+			{ mode: "resume", generation: 1, adoptedUntrackedResume: true },
+		]
+		for (const leaseCase of cases) {
+			const h = harness({ seed: {
+				"ses-restored": info("ses-restored", {
+					parentID: rootID,
+					outcome: "succeeded",
+					time: { created: 1, updated: 100, idle: 100 },
+				}),
+			} })
+			h.values.set(keyPrefix + "restored", persistedLease({
+				...leaseCase,
+				baselineIdle: null,
+				createdAt: 100,
+			}))
+			const manager = h.create()
+			await manager.ready()
+			expect((await manager.diagnostics()).activeLeases.map((lease) => lease.leaseID)).toContain("restored")
+			await manager.dispose()
+		}
+	})
+
+	test("keeps a later wrapped resume generation held at the first generation's idle", async () => {
+		const h = harness({ seed: {
+			"ses-restored": info("ses-restored", {
+				parentID: rootID,
+				outcome: "succeeded",
+				time: { created: 1, updated: 100, idle: 100 },
+			}),
+		} })
+		h.values.set(keyPrefix + "first", persistedLease({
+			leaseID: "first",
+			status: "running",
+			baselineIdle: null,
+			createdAt: 10,
+		}))
+		h.values.set(keyPrefix + "resume", persistedLease({
+			leaseID: "resume",
+			mode: "resume",
+			generation: 2,
+			baselineIdle: 100,
+			createdAt: 101,
+			supersedes: "first",
+		}))
+		const manager = h.create()
+		await manager.ready()
+		expect((await manager.diagnostics()).activeLeases.map((lease) => lease.leaseID)).toEqual(["resume"])
+		await manager.dispose()
+	})
+
 	test("scopes plugin storage leases by project and canonical location", async () => {
 		const shared = new Map<string, unknown>()
 		const first = harness({ storageValues: shared, config: { defaultConcurrency: 1 } as BackgroundTaskConfig })
