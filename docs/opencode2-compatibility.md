@@ -13,15 +13,15 @@ Status key: **Ported** means an OMO implementation is registered through the v2 
 | `todo-continuation-enforcer` | **Partial.** Native `session.execution.succeeded` terminal events (not `session.idle`) queue continuations for persisted incomplete todos and a basic active Boulder plan. The session location/project is checked before continuation. It respects `/stop-continuation`; legacy retry, cooldown, background-task, and no-progress behavior is not fully ported. |
 | `session-notification` | **Not ported.** No matching OMO notification hook is registered. |
 | `comment-checker` | **Host candidate.** No OMO hook registration; any host/editor behavior is not asserted as equivalent. |
-| `tool-output-truncator` | **Host candidate.** No OMO truncation hook is registered; output bounds/equivalence are unverified. |
+| `tool-output-truncator` | **Host protection; OMO policy not ported.** OpenCode 2.0.18 bounds local tool text at 2,000 lines / 50 KiB and retains full output. This differs from OMO's dynamic token budget, tighter webfetch cap, and all-tool option. |
 | `question-label-truncator` | **Not ported.** |
-| `directory-agents-injector` | **Host candidate.** OpenCode's native project instruction/agent context may cover part of this behavior; equivalent directory traversal and prompt ordering are unverified. |
+| `directory-agents-injector` | **Host-owned.** OpenCode loads global/project instructions and injects nested `AGENTS.md` after successful in-project reads as durable session instructions, with history-based deduplication. OMO already skips its legacy injector on supported host versions. The attachment point, truncation, and ordering differ from legacy OMO; this adapter does not inject a second copy. |
 | `directory-readme-injector` | **Not ported.** |
 | `empty-task-response-detector` | **Not ported.** |
 | `think-mode` | **Not ported.** |
 | `model-fallback` | **Not ported.** No OMO model fallback controller is wired into the native v2 hooks. |
 | `anthropic-context-window-limit-recovery` | **Not ported.** |
-| `preemptive-compaction` | **Host candidate.** The host owns compaction; OMO's preemptive threshold/recovery behavior is not implemented or verified. |
+| `preemptive-compaction` | **Host protection; OMO policy not ported.** Native auto-compaction checks estimated context before a request and responds to overflow. OMO's after-tool 78% threshold, cooldown, selected compaction model, and recovery behavior are absent. The public v2 plugin session API exposes a compaction hook but no explicit compact operation. |
 | `rules-injector` | **Not ported.** |
 | `background-notification` | **Host candidate.** Native child sessions are used, but the OMO background notification behavior is not registered. |
 | `auto-update-checker` | **Intentionally omitted.** This fork does not run the upstream updater from the incompatible legacy bootstrap. |
@@ -31,7 +31,7 @@ Status key: **Ported** means an OMO implementation is registered through the v2 
 | `agent-usage-reminder` | **Not ported.** |
 | `non-interactive-env` | **Ported.** The native shell-create hook adds the shared noninteractive environment only when the command contains `git`, preserving unrelated environment entries. |
 | `interactive-bash-session` | **Not ported.** The native `shell` tool is used; the legacy persistent interactive-bash session manager is absent. |
-| `tool-pair-validator` | **Host candidate.** No OMO repair hook is registered; protocol-level pairing behavior needs runtime trace verification. |
+| `tool-pair-validator` | **Host protection; historical repair not ported.** The native runner settles failed/interrupted live tool calls and missing hosted results. No equivalent sanitizer for arbitrary malformed historical tool messages was found in the source audit. |
 | `monitor-status-injector` | **Not ported.** |
 | `goal` | **Partial.** Native lifecycle code accounts usage/time and queues an active-goal continuation after `session.execution.succeeded`. `create_goal`, `update_goal`, and `get_goal` are registered when `goal.enabled` is true. One earlier goal-chain mock fixture passed, but it predates the final location guard; this does not establish full legacy parity. |
 | `category-skill-reminder` | **Not ported.** |
@@ -53,9 +53,9 @@ Status key: **Ported** means an OMO implementation is registered through the v2 
 | `unstable-agent-babysitter` | **Not ported.** |
 | `task-resume-info` | **Ported for native child-session IDs.** Successful task results receive a `task(task_id=...)` resume hint from native result metadata. Resuming with only `task_id` retains the owned child, agent, model, parent, and restrictions. |
 | `stop-continuation-guard` | **Partial.** `/stop-continuation` stops native success-triggered continuation; a small set of resume command spellings clears the stop state. |
-| `tasks-todowrite-disabler` | **Not ported.** Task-system registry exists, but this hook's conditional todo tool policy is not reproduced. |
+| `tasks-todowrite-disabler` | **Ported.** When the task system is enabled, native `todoread` returns guidance to use `task_list`/`task_get`; `todowrite` remains available for the live todo panel, matching the legacy policy despite the hook's historical name. |
 | `runtime-fallback` | **Not ported.** |
-| `write-existing-file-guard` | **Not ported.** |
+| `write-existing-file-guard` | **Ported.** Rejects writes to existing files until a successful read in that session grants one write. Preserves the legacy explicit `overwrite` and `.omo` exceptions and cross-session invalidation. Failed reads do not grant permission; session deletion clears grants. |
 | `notepad-write-guard` | **Ported.** Native tool execution rejects destructive writes to append-only `.omo/notepads` files before the write occurs and returns the guard error to the model. |
 | `bash-file-read-guard` | **Not ported.** |
 | `hashline-read-enhancer` | **Partial.** Adds hash annotations to native `read` output only when `hashline_edit: true`; does not cover every legacy read path. |
@@ -68,6 +68,8 @@ Status key: **Ported** means an OMO implementation is registered through the v2 
 | `native-edition-nudge` | **Intentionally omitted.** This fork's OpenCode adapter does not show the separate-edition promotion nudge. |
 
 Only the implemented hooks above honor the corresponding `disabled_hooks` values. Unknown/unsupported entries currently have no effect in the native adapter. The legacy `auto-slash-command` file-discovery hook is not ported, and its `disabled_hooks` entry does not remove native built-in commands; `disabled_commands` controls the native command registry.
+
+The host-owned/protection entries are source-audit findings against OpenCode 2.0.18 commit `cd9a14a6b688d4021bee381dfd39d2cef9c0f862`: `packages/core/src/tool/plugin/read.ts`, `session/instructions.ts`, `tool-output.ts`, `session/runner/step.ts`, and `session/compaction.ts`. They do not establish identical OMO behavior. Disabling an OMO hook does not disable these independent host facilities.
 
 ## Native built-in commands
 
@@ -100,7 +102,7 @@ The legacy inventory below comes from `src/plugin/tool-registry-core-tools.ts`, 
 | `skill` | Always, then `disabled_tools` | Native skill alias accepts `id` or `name`, and executes the host skill loader. `disabled_skills` is checked during delegated skill loading. |
 | `create_goal`, `update_goal`, `get_goal` | `goal.enabled`, then `disabled_tools` | Registered when enabled and operate on the actual native tool-call session. Goal persistence/continuation also uses the native terminal-success lifecycle; an earlier bounded goal-chain mock run is recorded separately from the final todo/Boulder run below. Broader behavioral parity remains unverified. |
 | `interactive_bash` | Only if `isInteractiveBashEnabled()` detects its runtime prerequisites, then `disabled_tools` | Not registered; native `shell`/`bash` alias does not provide a persistent tmux session. |
-| `task_create`, `task_get`, `task_list`, `task_update` | `experimental.task_system: true`, then `disabled_tools` | Native tools are registered under the same names when that gate is true. Create/update synchronize OMO todo state; the host task implementation is not a full replacement for every legacy task-system behavior. |
+| `task_create`, `task_get`, `task_list`, `task_update` | `experimental.task_system: true`, then `disabled_tools` | Native tools use schemas compatible with the host's Standard JSON Schema conversion. A real-host fixture verifies that all four tools are model-visible, create/get/list/update execute, the task persists, and create/update synchronize OMO todo state. Earlier mixed-version Zod schemas silently dropped three tools; that defect is fixed. |
 | `edit` hashline replacement | `hashline_edit: true`, then `disabled_tools` | V2 keeps native `edit` and adds `hashline_edit`; exact legacy replacement semantics and all fallback paths are not reproduced. |
 | `monitor_start`, `monitor_stop`, `monitor_list`, `monitor_output` | `monitor.enabled: true` and a monitor manager, then `disabled_tools` | Not registered. |
 | `team_create`, `team_delete`, `team_shutdown_request`, `team_approve_shutdown`, `team_reject_shutdown`, `team_send_message`, `team_task_create`, `team_task_list`, `team_task_update`, `team_task_get`, `team_status`, `team_list` | `team_mode.enabled: true`, then `disabled_tools` | Not registered; setting `team_mode.enabled` does not enable native Team Mode yet. |
@@ -116,6 +118,8 @@ The v2 adapter additionally creates `todowrite` and `todoread`, compatibility al
 - The native TUI setup and status sidebar load in the 2.0.18 PTY fixture. The `/omo-status` dialog and blank `/omo-btw` question dialog rendered and were dismissed with Escape. A submitted BTW question then created a distinct native fork, completed a response in that fork, and left the original parent transcript unchanged. OMO uses `/omo-btw` with `/side` as its alias so OpenCode's native `/btw` remains untouched.
 
 ## Verification boundary
+
+The safety/task source checkpoint is `360835f85`, based on the integrated 5.0.0 adapter below. `test:opencode2` passed 164 tests with 666 assertions across 28 files; `typecheck:opencode2` and `build:opencode2` passed. Its server bundle SHA-256 is `423c9ee886f2bf6fc710e00487cf57cba09807a286580907b9c31194b200cdb0`. The isolated OpenCode 2.0.18 mock-host fixture passed 14 checks covering rejected overwrites, one-use successful-read permission, the TodoRead/TodoWrite policy, all four model-visible task tools, persisted task completion, and native todo synchronization. The final host log has no invalid-tool-registration diagnostics. Evidence and source/bundle checksums are under `.omo/evidence/20260927-opencode2-safety/`; earlier fixture counts below belong to their stated checkpoints and were not all repeated on this bundle.
 
 The verified **5.0.0+commands checkpoint** is source commit `891882dacbb05fb5d499c9211c46deb4045ef04a`, whose second parent is upstream release `eb5c55c67877ef58e58a174b4c26d0c3e941eca0`. `bun install --ignore-scripts --frozen-lockfile`, `test:opencode2` (149 tests, 578 assertions across 27 files), `typecheck:opencode2`, `typecheck:script`, and `build:opencode2` passed. The affected ULW, prompt, delegate-category, model-core category, Senpi category, and model-profile suite passed 1,316 tests with 4,120 assertions across 115 files. The checked bundle was built from the exact source tree of that checkpoint: `server.js` SHA-256 `f3bb68d4d64dc3b7e066587e26bab302f9ccbd8862d5d4896febf3f5b05c6ce7`; `tui.js` SHA-256 `f7326484dcfb5ac1965d7cade174e35b0cac64a4c22fac6b956ce0610f0010a6`.
 
