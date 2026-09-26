@@ -21,7 +21,18 @@ export type V2CommandDispatchGate = {
 
 export type AssertV2CommandActive = () => void
 
-/** Change a session's selected agent before any command-specific state is prepared. */
+type SelectedModel = {
+	readonly providerID: string
+	readonly id: string
+	readonly variant?: string
+}
+
+function sameSelectedModel(left: SelectedModel | undefined, right: SelectedModel | undefined): boolean {
+	if (!left || !right) return left === right
+	return left.providerID === right.providerID && left.id === right.id && (left.variant ?? "default") === (right.variant ?? "default")
+}
+
+/** Apply the selected agent and its configured model before command-specific state is prepared. */
 export async function ensureV2SessionAgent(
 	ctx: Plugin.Context,
 	sessionID: NativeCommandInvocation["sessionID"],
@@ -29,11 +40,20 @@ export async function ensureV2SessionAgent(
 	assertActive: AssertV2CommandActive = () => undefined,
 ): Promise<void> {
 	assertActive()
-	const session = await ctx.session.get({ sessionID })
+	const [session, target] = await Promise.all([
+		ctx.session.get({ sessionID }),
+		ctx.agent.get({ agentID: targetAgent }),
+	])
 	assertActive()
+	if (target.data.id !== targetAgent) throw new Error(`Native command target agent "${targetAgent}" is not registered`)
 	if (session.agent !== targetAgent) {
 		assertActive()
 		await ctx.session.switchAgent({ sessionID, agent: targetAgent })
+		assertActive()
+	}
+	if (target.data.model && !sameSelectedModel(session.model, target.data.model)) {
+		assertActive()
+		await ctx.session.switchModel({ sessionID, model: target.data.model })
 		assertActive()
 	}
 }

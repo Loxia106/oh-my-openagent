@@ -42,13 +42,24 @@ function deferred<T>() {
 	return { promise, resolve, reject }
 }
 
-function createHost(directory: string, agentNames = ["atlas", "sisyphus"], history: unknown[] = [], initialAgent = "sisyphus") {
+type TestModel = { providerID: string; id: string; variant?: string }
+
+function createHost(
+	directory: string,
+	agentNames = ["atlas", "sisyphus"],
+	history: unknown[] = [],
+	initialAgent = "sisyphus",
+	agentModels: Record<string, TestModel | undefined> = {},
+	initialModel: TestModel = { providerID: "host", id: "current-model" },
+) {
 	const storage = createStorage()
 	const commands = new Map<string, RegisteredCommand>()
 	const promptCalls: unknown[] = []
 	const syntheticCalls: unknown[] = []
 	const switches: string[] = []
+	const modelSwitches: unknown[] = []
 	const sessionAgents = new Map<string, string>([["ses-current", initialAgent]])
+	const sessionModels = new Map<string, TestModel>([["ses-current", initialModel]])
 	let historyCalls = 0
 	let registrationDisposed = false
 	const ctx = unsafeTestValue<Plugin.Context>({
@@ -56,15 +67,26 @@ function createHost(directory: string, agentNames = ["atlas", "sisyphus"], histo
 		storage,
 		agent: {
 			list: async () => ({ data: agentNames.map((id) => ({ id })) }),
+			get: async ({ agentID }: { agentID: string }) => ({ data: { id: agentID, model: agentModels[agentID] } }),
 		},
 		session: {
-			get: async ({ sessionID }: { sessionID: string }) => ({ agent: sessionAgents.get(sessionID) ?? "sisyphus" }),
+			get: async ({ sessionID }: { sessionID: string }) => ({
+				agent: sessionAgents.get(sessionID) ?? "sisyphus",
+				model: sessionModels.get(sessionID),
+			}),
 		switchAgent: async ({ sessionID, agent }: { sessionID: string; agent: string }) => {
 				if (sessionID === "ses-current" && readBoulderState(directory)) {
 					throw new Error("state was written before the native agent switch")
 				}
 				switches.push(agent)
 				sessionAgents.set(sessionID, agent)
+			},
+			switchModel: async ({ sessionID, model }: { sessionID: string; model: TestModel }) => {
+				if (sessionID === "ses-current" && readBoulderState(directory)) {
+					throw new Error("state was written before the native model switch")
+				}
+				modelSwitches.push({ sessionID, model })
+				sessionModels.set(sessionID, model)
 			},
 			context: async () => { historyCalls += 1; return history },
 			prompt: async (input: unknown) => { promptCalls.push(input) },
@@ -77,7 +99,7 @@ function createHost(directory: string, agentNames = ["atlas", "sisyphus"], histo
 			},
 		},
 	})
-	return { ctx, storage, commands, promptCalls, syntheticCalls, switches, get historyCalls() { return historyCalls }, get registrationDisposed() { return registrationDisposed } }
+	return { ctx, storage, commands, promptCalls, syntheticCalls, switches, modelSwitches, sessionModels, get historyCalls() { return historyCalls }, get registrationDisposed() { return registrationDisposed } }
 }
 
 function commandInput(text: string, sessionID = "ses-current", delivery: "queue" | "steer" = "queue"): NativeCommandInvocation {
@@ -113,9 +135,10 @@ describe("native OpenCode 2 builtin commands", () => {
 		const otherPlan = join(plans, "other-flow.md")
 		await writeFile(preferredPlan, "# Preferred Flow\n\n## Tasks\n- [ ] 1. Implement the native command\n")
 		await writeFile(otherPlan, "# Other Flow\n\n## Tasks\n- [ ] 1. Unselected task\n")
+		const atlasModel = { providerID: "allowed", id: "atlas-model", variant: "reasoning" }
 		const host = createHost(directory, ["atlas", "sisyphus"], [
 			{ type: "assistant", content: [{ type: "text", text: `Plan file: ${preferredPlan}` }] },
-		])
+		], "sisyphus", { atlas: atlasModel })
 		const { cleanup, commands } = await register(host)
 		const ulw = commands.get("ulw-execute")
 		expect(ulw).toBeDefined()
@@ -123,6 +146,8 @@ describe("native OpenCode 2 builtin commands", () => {
 		await Promise.all([ulw!.execute(input), ulw!.execute(input)])
 
 		expect(host.switches).toEqual(["atlas"])
+		expect(host.modelSwitches).toEqual([{ sessionID: "ses-current", model: atlasModel }])
+		expect(host.sessionModels.get("ses-current")).toEqual(atlasModel)
 		expect(host.historyCalls).toBe(1)
 		expect(host.promptCalls).toHaveLength(1)
 		const prompted = host.promptCalls[0] as { sessionID: string; text: string; delivery: string; files: unknown[] }
@@ -146,10 +171,13 @@ describe("native OpenCode 2 builtin commands", () => {
 
 	test("falls back to Sisyphus when Atlas is unavailable and reports when neither is registered", async () => {
 		const directory = await createDirectory("omo-v2-command-agent-fallback-")
-		const sisyphus = createHost(directory, ["sisyphus"], [], "explore")
+		const sisyphusModel = { providerID: "allowed", id: "sisyphus-model", variant: "fallback" }
+		const sisyphus = createHost(directory, ["sisyphus"], [], "explore", { sisyphus: sisyphusModel })
 		const sisyphusRegistration = await register(sisyphus)
 		await sisyphus.commands.get("ulw-execute")!.execute(commandInput(""))
 		expect(sisyphus.switches).toEqual(["sisyphus"])
+		expect(sisyphus.modelSwitches).toEqual([{ sessionID: "ses-current", model: sisyphusModel }])
+		expect(sisyphus.sessionModels.get("ses-current")).toEqual(sisyphusModel)
 		expect((sisyphus.promptCalls[0] as { text: string }).text).toContain("You are starting a Sisyphus work session.")
 		await sisyphusRegistration.cleanup()
 
@@ -171,6 +199,8 @@ describe("native OpenCode 2 builtin commands", () => {
 		await commands.get("ulw-execute")!.execute(input)
 
 		expect(host.switches).toEqual(["atlas"])
+		expect(host.modelSwitches).toEqual([])
+		expect(host.sessionModels.get(input.sessionID)).toEqual({ providerID: "host", id: "current-model" })
 		expect(host.historyCalls).toBe(0)
 		expect(host.promptCalls).toHaveLength(1)
 		expect(host.syntheticCalls).toEqual([])
@@ -180,6 +210,24 @@ describe("native OpenCode 2 builtin commands", () => {
 		expect(prompt.text).toContain("chosen-plan --make-pr")
 		expect(prompt.text).toContain(`Session ID: ${input.sessionID}`)
 		expect(prompt.text).not.toContain(CONTEXT_MARKER)
+		expect(readBoulderState(directory)).toBeNull()
+		await cleanup()
+	})
+
+	test("aborts /ulw-execute before Boulder, history, or prompt when Atlas model selection fails", async () => {
+		const directory = await createDirectory("omo-v2-command-ulw-model-failure-")
+		const atlasModel = { providerID: "allowed", id: "atlas-model", variant: "reasoning" }
+		const host = createHost(directory, ["atlas", "sisyphus"], [], "sisyphus", { atlas: atlasModel })
+		const raw = host.ctx as unknown as { session: { switchModel: (input: unknown) => Promise<void> } }
+		raw.session.switchModel = async () => { throw new Error("Atlas model selection failed") }
+		const { cleanup, commands } = await register(host)
+
+		await expect(commands.get("ulw-execute")!.execute(commandInput(""))).rejects.toThrow("Atlas model selection failed")
+
+		// Native selection is sequential (agent, then model); the model failure stops all command-side work.
+		expect(host.switches).toEqual(["atlas"])
+		expect(host.historyCalls).toBe(0)
+		expect(host.promptCalls).toEqual([])
 		expect(readBoulderState(directory)).toBeNull()
 		await cleanup()
 	})

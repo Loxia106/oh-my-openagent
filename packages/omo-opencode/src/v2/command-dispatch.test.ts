@@ -96,10 +96,15 @@ describe("native command dispatch", () => {
 	test("switches agent before prompt and preserves the native prompt and delivery", async () => {
 		const order: string[] = []
 		let prompted: unknown
+		const atlasModel = { providerID: "allowed", id: "atlas-model", variant: "reasoning" }
 		const ctx = unsafeTestValue<Plugin.Context>({
+			agent: {
+				get: async () => ({ data: { id: "atlas", model: atlasModel } }),
+			},
 			session: {
-				get: async () => ({ agent: "sisyphus" }),
-				switchAgent: async () => { order.push("switch") },
+				get: async () => ({ agent: "sisyphus", model: { providerID: "allowed", id: "old-model" } }),
+				switchAgent: async () => { order.push("agent") },
+				switchModel: async ({ model }: { model: typeof atlasModel }) => { order.push(`model:${model.providerID}/${model.id}/${model.variant}`) },
 				prompt: async (input: unknown) => { order.push("prompt"); prompted = input },
 			},
 		})
@@ -110,12 +115,60 @@ describe("native command dispatch", () => {
 
 		await ensureV2SessionAgent(ctx, input.sessionID, "atlas")
 		await submitV2CommandPrompt(ctx, input, "expanded")
-		expect(order).toEqual(["switch", "prompt"])
+		expect(order).toEqual(["agent", "model:allowed/atlas-model/reasoning", "prompt"])
 		expect(prompted).toEqual({
 			...input.prompt,
 			sessionID: input.sessionID,
 			text: "expanded",
 			delivery: "steer",
 		})
+	})
+
+	test("keeps the current model when the target agent has no configured model", async () => {
+		const order: string[] = []
+		const currentModel = { providerID: "host", id: "current-model", variant: "custom" }
+		const ctx = unsafeTestValue<Plugin.Context>({
+			agent: { get: async () => ({ data: { id: "atlas", model: undefined } }) },
+			session: {
+				get: async () => ({ agent: "sisyphus", model: currentModel }),
+				switchAgent: async () => { order.push("agent") },
+				switchModel: async () => { order.push("model") },
+			},
+		})
+
+		await ensureV2SessionAgent(ctx, "ses-current", "atlas")
+
+		expect(order).toEqual(["agent"])
+	})
+
+	test("normalizes absent and default variants and skips redundant agent/model changes", async () => {
+		const order: string[] = []
+		const ctx = unsafeTestValue<Plugin.Context>({
+			agent: { get: async () => ({ data: { id: "atlas", model: { providerID: "allowed", id: "atlas-model", variant: "default" } } }) },
+			session: {
+				get: async () => ({ agent: "atlas", model: { providerID: "allowed", id: "atlas-model" } }),
+				switchAgent: async () => { order.push("agent") },
+				switchModel: async () => { order.push("model") },
+			},
+		})
+
+		await ensureV2SessionAgent(ctx, "ses-current", "atlas")
+
+		expect(order).toEqual([])
+	})
+
+	test("fails before selection mutations when target-agent lookup fails", async () => {
+		const order: string[] = []
+		const ctx = unsafeTestValue<Plugin.Context>({
+			agent: { get: async () => { throw new Error("target agent unavailable") } },
+			session: {
+				get: async () => ({ agent: "sisyphus", model: { providerID: "host", id: "current-model" } }),
+				switchAgent: async () => { order.push("agent") },
+				switchModel: async () => { order.push("model") },
+			},
+		})
+
+		await expect(ensureV2SessionAgent(ctx, "ses-current", "atlas")).rejects.toThrow("target agent unavailable")
+		expect(order).toEqual([])
 	})
 })
