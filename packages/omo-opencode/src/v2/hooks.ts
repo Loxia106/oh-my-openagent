@@ -2,6 +2,7 @@ import type { Plugin } from "@opencode/plugin"
 import type { OhMyOpenCodeConfig } from "../config"
 import { registerV2ContextHooks } from "./context-hooks"
 import { registerV2LifecycleHooks } from "./lifecycle"
+import { registerV2SafetyHooks } from "./safety-hooks"
 import { registerV2ToolHooks } from "./tool-hooks"
 
 async function unwind(cleanups: Array<() => Promise<void>>): Promise<unknown[]> {
@@ -22,6 +23,7 @@ export async function registerV2Hooks(ctx: Plugin.Context, config: OhMyOpenCodeC
 	try {
 		cleanups.push(await registerV2ContextHooks(ctx, config))
 		cleanups.push(await registerV2ToolHooks(ctx, config))
+		cleanups.push(await registerV2SafetyHooks(ctx, config))
 		cleanups.push(await registerV2LifecycleHooks(ctx, config))
 	} catch (error) {
 		const cleanupErrors = await unwind(cleanups)

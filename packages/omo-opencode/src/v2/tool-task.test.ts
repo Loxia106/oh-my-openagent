@@ -38,7 +38,46 @@ function context(sessionID = "ses-tasks"): ToolContext {
   }
 }
 
+function hostInputJsonSchema(input: unknown): Record<string, unknown> {
+  const value = input as {
+    "~standard"?: {
+      jsonSchema?: {
+        input: (options: { target: "draft-2020-12" }) => unknown
+      }
+    }
+  }
+  const convert = value["~standard"]?.jsonSchema?.input
+  if (!convert) throw new Error("Tool input does not expose the Standard JSON Schema API used by OpenCode 2")
+  const schema = convert({ target: "draft-2020-12" })
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) throw new Error("Host input JSON Schema is not an object")
+  return schema as Record<string, unknown>
+}
+
 describe("native V2 task-system adapters", () => {
+  test("publishes host-convertible native schemas with the supported task field contract", () => {
+    const editor = new TestEditor()
+    addV2TaskSystemTools(editor as unknown as ToolEditor, { experimental: { task_system: true } } as never, createV2TodoState(storage() as never), process.cwd())
+
+    const jsonSchema = (name: string) => hostInputJsonSchema(editor.get(name)!.input)
+    const properties = (name: string) => jsonSchema(name).properties as Record<string, unknown>
+    const field = (name: string, key: string) => properties(name)[key] as Record<string, unknown>
+
+    expect(properties("task_create")).toHaveProperty("subject")
+    expect(properties("task_create")).not.toHaveProperty("owner")
+    expect(jsonSchema("task_create").required).toContain("subject")
+    expect(field("task_create", "blockedBy").description).toBe("Task IDs blocking this task")
+    expect(properties("task_list")).toEqual({})
+    expect(properties("task_get")).toHaveProperty("id")
+    expect(jsonSchema("task_get").required).toContain("id")
+    expect(field("task_get", "id").description).toBe("Task ID to retrieve (format: T-{uuid})")
+    expect(properties("task_update")).toHaveProperty("owner")
+    expect(properties("task_update")).not.toHaveProperty("repoURL")
+    expect(properties("task_update")).not.toHaveProperty("parentID")
+    expect(jsonSchema("task_update").required).toContain("id")
+    expect(field("task_update", "addBlockedBy").description).toBe("Task IDs to add to blockedBy (additive, not replacement)")
+    expect(field("task_update", "metadata").description).toBe("Task metadata to merge (set key to null to delete)")
+  })
+
   test("reuses task factories, persists task state, and syncs todo continuation state", async () => {
     const directory = mkdtempSync(join(tmpdir(), "omo-v2-task-test-"))
     try {

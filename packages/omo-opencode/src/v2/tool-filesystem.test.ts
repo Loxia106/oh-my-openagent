@@ -63,7 +63,7 @@ describe("native V2 filesystem adapters", () => {
     await editor.get("read")!.execute({ filePath: "/tmp/a.ts", offset: 0, limit: 0 }, context())
     await editor.get("read")!.execute({ path: "/tmp/b.ts", offset: 2 }, context())
     await editor.get("edit")!.execute({ filePath: "/tmp/a.ts", oldString: "a", newString: "b", replaceAll: true }, context())
-    await editor.get("write")!.execute({ filePath: "/tmp/a.ts", content: "c" }, context())
+    await editor.get("write")!.execute({ filePath: "/tmp/a.ts", content: "c", overwrite: true }, context())
     await editor.get("apply_patch")!.execute({ patch: "*** Begin Patch\n*** End Patch" }, context())
 
     expect(seen).toEqual([

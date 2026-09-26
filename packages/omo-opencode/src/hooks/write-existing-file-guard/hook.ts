@@ -13,12 +13,18 @@ export type GuardArgs = {
   overwrite?: boolean | string
 }
 
+type DirectoryPluginContext = Pick<PluginInput, "directory">
+
 const MAX_TRACKED_SESSIONS = 256
 export const MAX_TRACKED_PATHS_PER_SESSION = 1024
 
 type WriteExistingFileGuardOptions = {
   maxTrackedSessions?: number
   maxTrackedPathsPerSession?: number
+}
+
+export type WriteExistingFileGuardHook = Hooks & {
+  clearSession(sessionID: string): void
 }
 
 export function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -33,7 +39,7 @@ export function getPathFromArgs(args: GuardArgs | undefined): string | undefined
   return args?.filePath ?? args?.path ?? args?.file_path
 }
 
-export function resolveInputPath(ctx: PluginInput, inputPath: string): string {
+export function resolveInputPath(ctx: DirectoryPluginContext, inputPath: string): string {
   return normalize(isAbsolute(inputPath) ? inputPath : resolve(ctx.directory, inputPath))
 }
 
@@ -76,12 +82,17 @@ export function isOverwriteEnabled(value: boolean | string | undefined): boolean
   return false
 }
 
-export function createWriteExistingFileGuardHook(ctx: PluginInput, options?: WriteExistingFileGuardOptions): Hooks {
+export function createWriteExistingFileGuardHook(ctx: DirectoryPluginContext, options?: WriteExistingFileGuardOptions): WriteExistingFileGuardHook {
   const readPermissionsBySession = new Map<string, Set<string>>()
   const sessionLastAccess = new Map<string, number>()
   const maxTrackedSessions = options?.maxTrackedSessions ?? MAX_TRACKED_SESSIONS
   const maxTrackedPathsPerSession = options?.maxTrackedPathsPerSession ?? MAX_TRACKED_PATHS_PER_SESSION
   let canonicalSessionRoot: string | undefined
+
+  function clearSession(sessionID: string): void {
+    readPermissionsBySession.delete(sessionID)
+    sessionLastAccess.delete(sessionID)
+  }
 
   function getCanonicalSessionRoot(): string {
     if (!canonicalSessionRoot) {
@@ -114,8 +125,8 @@ export function createWriteExistingFileGuardHook(ctx: PluginInput, options?: Wri
         return
       }
 
-      readPermissionsBySession.delete(sessionID)
-      sessionLastAccess.delete(sessionID)
+      clearSession(sessionID)
     },
+    clearSession,
   }
 }

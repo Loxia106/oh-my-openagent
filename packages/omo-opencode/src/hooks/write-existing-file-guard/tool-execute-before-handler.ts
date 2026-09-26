@@ -90,7 +90,7 @@ export function isOmoWorkspacePath(canonicalPath: string): boolean {
 }
 
 export async function handleWriteExistingFileGuardToolExecuteBefore(params: {
-  ctx: PluginInput
+  ctx: Pick<PluginInput, "directory">
   input: { tool?: string; sessionID?: string }
   output: { args?: unknown }
   readPermissionsBySession: Map<string, Set<string>>

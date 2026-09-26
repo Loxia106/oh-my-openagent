@@ -3,13 +3,41 @@ import { basename, isAbsolute, resolve } from "node:path"
 import { z } from "zod"
 import type { OhMyOpenCodeConfig, SisyphusTasksConfig } from "../config"
 import { createTaskCreateTool, createTaskGetTool, createTaskList, createTaskUpdateTool } from "../tools/task"
+import { TaskCreateInputSchema, TaskGetInputSchema, TaskUpdateInputSchema } from "../tools/task/types"
 import type { TaskObject } from "../tools/task/types"
 import { isTaskSystemEnabled } from "../shared/task-system-enabled"
 import type { V2TodoState } from "./task-state"
 import { addV2Tool } from "./tool-adapter"
 
-function taskInputSchema(definition: ReturnType<typeof createTaskList> | ReturnType<typeof createTaskCreateTool> | ReturnType<typeof createTaskGetTool> | ReturnType<typeof createTaskUpdateTool>) {
-  return z.object(definition.args)
+// Never wrap legacy factory args here: those fields are built by the legacy
+// @opencode-ai/plugin Zod instance (4.1.x), while the V2 host converts the
+// Standard JSON Schema contract using the package-root Zod instance (4.6.x).
+const taskInputSchemas = {
+  task_create: TaskCreateInputSchema.extend({
+    subject: TaskCreateInputSchema.shape.subject.describe("Task subject (required)"),
+    description: TaskCreateInputSchema.shape.description.describe("Task description"),
+    activeForm: TaskCreateInputSchema.shape.activeForm.describe("Active form (present continuous)"),
+    metadata: TaskCreateInputSchema.shape.metadata.describe("Task metadata"),
+    blockedBy: TaskCreateInputSchema.shape.blockedBy.describe("Task IDs blocking this task"),
+    blocks: TaskCreateInputSchema.shape.blocks.describe("Task IDs this task blocks"),
+    repoURL: TaskCreateInputSchema.shape.repoURL.describe("Repository URL"),
+    parentID: TaskCreateInputSchema.shape.parentID.describe("Parent task ID"),
+  }).omit({ owner: true }),
+  task_get: TaskGetInputSchema.extend({
+    id: TaskGetInputSchema.shape.id.describe("Task ID to retrieve (format: T-{uuid})"),
+  }),
+  task_list: z.object({}),
+  task_update: TaskUpdateInputSchema.extend({
+    id: TaskUpdateInputSchema.shape.id.describe("Task ID (required)"),
+    subject: TaskUpdateInputSchema.shape.subject.describe("Task subject"),
+    description: TaskUpdateInputSchema.shape.description.describe("Task description"),
+    status: TaskUpdateInputSchema.shape.status.describe("Task status"),
+    activeForm: TaskUpdateInputSchema.shape.activeForm.describe("Active form (present continuous)"),
+    owner: TaskUpdateInputSchema.shape.owner.describe("Task owner (agent name)"),
+    addBlocks: TaskUpdateInputSchema.shape.addBlocks.describe("Task IDs to add to blocks (additive, not replacement)"),
+    addBlockedBy: TaskUpdateInputSchema.shape.addBlockedBy.describe("Task IDs to add to blockedBy (additive, not replacement)"),
+    metadata: TaskUpdateInputSchema.shape.metadata.describe("Task metadata to merge (set key to null to delete)"),
+  }).omit({ repoURL: true, parentID: true }),
 }
 
 function toTask(value: unknown): TaskObject | undefined {
@@ -84,7 +112,7 @@ export function addV2TaskSystemTools(
       continue
     }
     const definition = factories[name]
-    const input = taskInputSchema(definition)
+    const input = taskInputSchemas[name]
     addV2Tool(editor, {
       name,
       description: definition.description,

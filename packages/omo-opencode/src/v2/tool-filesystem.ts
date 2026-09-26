@@ -41,6 +41,7 @@ const nativeWriteInput = z.object({
   path: z.string().optional(),
   filePath: z.string().optional(),
   content: z.string(),
+  overwrite: z.union([z.boolean(), z.string()]).optional(),
 }).superRefine((args, context) => {
   if (!args.path && !args.filePath) context.addIssue({ code: "custom", message: "Provide path or filePath." })
   if (args.path && args.filePath && args.path !== args.filePath) {
