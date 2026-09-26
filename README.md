@@ -1,7 +1,7 @@
 > [!WARNING]
 > **Personal fork:** this repository contains local compatibility work for OpenCode 2.0.18 that is not an upstream Oh My OpenAgent release. The native v2 adapter is incomplete; review the [compatibility matrix](docs/opencode2-compatibility.md) before using it. The upstream SUL-1.0 license and notices remain in force.
 >
-> To try this fork, clone its `codex/opencode2-compat` branch from `https://github.com/Loxia106/oh-my-openagent.git`, run `bun install --ignore-scripts`, `bun run build:opencode2`, then choose a target with `bun run install:opencode2 -- --project <project-dir>` or `--config-dir <opencode-config-dir>`. Keep the source checkout and its `node_modules` in place; the configured plugin path is absolute and its bundle uses external SDK/UI packages plus staged file-backed assets.
+> To try this fork, clone its `codex/opencode2-compat` branch from `https://github.com/Loxia106/oh-my-openagent.git`, run `bun install --ignore-scripts --frozen-lockfile`, `bun run build:opencode2`, then choose a target with `bun run install:opencode2 -- --project <project-dir>` or `--config-dir <opencode-config-dir>`. Keep the source checkout and its `node_modules` in place; the configured plugin path is absolute and its bundle uses external SDK/UI packages plus staged file-backed assets.
 
 > [!NOTE]
 > **OmO 5.0: OmO ❤️ Pi**

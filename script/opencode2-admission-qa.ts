@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { existsSync } from "node:fs"
-import { mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, realpath, rename, writeFile } from "node:fs/promises"
 import { isAbsolute, join, resolve } from "node:path"
 import { tmpdir } from "node:os"
 import { Database } from "bun:sqlite"
@@ -17,6 +17,7 @@ const QA_API_KEY = "omo-admission-qa-local-key"
 const MODEL = "omoqa/qa-model"
 const SECONDARY_MODEL = "omoqa/qa-secondary"
 const TIMEOUT_MS = 90_000
+const RELOAD_SCENARIO_ENABLED = process.env.OPENCODE2_ADMISSION_RELOAD_SCENARIO === "1"
 const CHILD_MARKERS = [
 	"OMO_ADMISSION_CHILD_DIRECT_A",
 	"OMO_ADMISSION_CHILD_TASK_B",
@@ -24,6 +25,8 @@ const CHILD_MARKERS = [
 	"OMO_ADMISSION_CHILD_RESUME_B",
 	"OMO_ADMISSION_CHILD_CANCEL_FOLLOWER",
 	"OMO_ADMISSION_CHILD_DEPTH_PROBE",
+	"OMO_ADMISSION_CHILD_RELOAD_HELD",
+	"OMO_ADMISSION_CHILD_RELOAD_NEXT",
 ] as const
 type ChildMarker = typeof CHILD_MARKERS[number]
 
@@ -47,6 +50,7 @@ type Lease = {
 	status: string
 	generation: number
 	outcome: string | null
+	baselineIdle?: number | null
 }
 type Observation = {
 	number: number
@@ -146,7 +150,7 @@ function textResponse(text: string, id: string, model: string, streaming: boolea
 function markerFrom(body: Record<string, unknown>): string | undefined {
 	return userMarker(body, [
 		"OMO_PARENT_DIRECT_A", "OMO_PARENT_TASK_B", "OMO_PARENT_CALL_C", "OMO_PARENT_RESUME_B",
-		"OMO_PARENT_CANCEL_FOLLOWER", "OMO_PARENT_DEPTH", ...CHILD_MARKERS,
+		"OMO_PARENT_CANCEL_FOLLOWER", "OMO_PARENT_DEPTH", "OMO_PARENT_RELOAD_HELD", "OMO_PARENT_RELOAD_NEXT", ...CHILD_MARKERS,
 	])
 }
 
@@ -158,6 +162,8 @@ function parentToolCall(marker: string, resumedChildID?: string): { tool: string
 		case "OMO_PARENT_RESUME_B": return { tool: "task", args: { task_id: resumedChildID ?? "__RESUMED_CHILD_B__", prompt: CHILD_MARKERS[3], run_in_background: true } }
 		case "OMO_PARENT_CANCEL_FOLLOWER": return { tool: "subagent", args: { agent: "explore", prompt: CHILD_MARKERS[4], model: MODEL, background: true, description: "admission cancellation follower" } }
 		case "OMO_PARENT_DEPTH": return { tool: "subagent", args: { agent: "depth-probe", prompt: CHILD_MARKERS[5], model: MODEL, background: true, description: "admission native-depth probe" } }
+		case "OMO_PARENT_RELOAD_HELD": return { tool: "subagent", args: { agent: "explore", prompt: CHILD_MARKERS[6], model: MODEL, background: true, description: "admission offline-reload held child" } }
+		case "OMO_PARENT_RELOAD_NEXT": return { tool: "subagent", args: { agent: "explore", prompt: CHILD_MARKERS[7], model: MODEL, background: true, description: "admission post-reload queued child" } }
 	}
 	return undefined
 }
@@ -262,9 +268,6 @@ async function main(): Promise<void> {
 	if (!existsSync(serverPath)) throw new Error(`Native bundle missing: ${serverPath}`)
 	const serverHash = createHash("sha256").update(await readFile(serverPath)).digest("hex")
 	if (serverHash !== EXPECTED_SERVER_SHA256) throw new Error(`Frozen bundle changed: expected ${EXPECTED_SERVER_SHA256}, received ${serverHash}`)
-	const versionResult = Bun.spawnSync([OPENCODE_BIN, "--version"], { stdout: "pipe", stderr: "pipe" })
-	const version = new TextDecoder().decode(versionResult.stdout).trim()
-	if (!version.includes("2.0.18")) throw new Error(`Expected OpenCode 2.0.18, got ${version}`)
 
 	const runID = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-")
 	const evidence = join(EVIDENCE_ROOT, `run-${runID}`)
@@ -280,6 +283,21 @@ async function main(): Promise<void> {
 	const omoHome = join(tempRoot, "omo-home")
 	const dbPath = join(tempRoot, "opencode.db")
 	await Promise.all([project, home, xdgData, xdgConfig, xdgState, xdgCache, isolatedTmp, omoHome].map((path) => mkdir(path, { recursive: true })))
+	const childEnvironment = {
+		PATH: process.env.PATH ?? "/usr/bin:/bin",
+		TMPDIR: isolatedTmp,
+		HOME: home,
+		XDG_DATA_HOME: xdgData,
+		XDG_CONFIG_HOME: xdgConfig,
+		XDG_STATE_HOME: xdgState,
+		XDG_CACHE_HOME: xdgCache,
+		OPENCODE_DB: dbPath,
+		OMO_HOME: omoHome,
+		OPENCODE_DISABLE_MODELS_FETCH: "1",
+		OPENCODE_TELEMETRY_DISABLED: "1",
+		OPENCODE_SERVER_PASSWORD: QA_PASSWORD,
+		OPENCODE_PASSWORD: QA_PASSWORD,
+	}
 	const canonicalProject = await realpath(project)
 	const port = reservePort()
 	const observations: Observation[] = []
@@ -314,7 +332,9 @@ async function main(): Promise<void> {
 	let stderrTask: Promise<void> = Promise.resolve()
 	let failure: unknown
 	let output: Record<string, unknown> = {}
+	let version = "unverified"
 	let originProbeActive = false
+	let reloadScenarioEvidence: Record<string, unknown> = { enabled: RELOAD_SCENARIO_ENABLED }
 	let mockServer: ReturnType<typeof Bun.serve> | undefined
 	const promptRuns: Array<{ marker: string; sessionID: string; settled: Promise<{ ok: boolean; error?: string }> }> = []
 	const promptResult = (promise: Promise<unknown>) => promise.then(
@@ -323,7 +343,13 @@ async function main(): Promise<void> {
 	)
 
 	try {
+		const versionResult = Bun.spawnSync([OPENCODE_BIN, "--version"], { stdout: "pipe", stderr: "pipe", env: childEnvironment })
+		version = new TextDecoder().decode(versionResult.stdout).trim()
+		if (!version.includes("2.0.18")) throw new Error(`Expected OpenCode 2.0.18, got ${version}`)
+
 		const originHookDirectory = join(tempRoot, "omo-admission-origin-hook")
+		const initialPluginOrder = RELOAD_SCENARIO_ENABLED ? [originHookDirectory, PLUGIN_DIR] : [PLUGIN_DIR, originHookDirectory]
+		reloadScenarioEvidence = { enabled: RELOAD_SCENARIO_ENABLED, initialPluginOrder }
 		await mkdir(originHookDirectory, { recursive: true })
 		await writeFile(join(originHookDirectory, "index.js"), `export default {
 	  id: "omo-native-admission-origin-probe",
@@ -418,7 +444,7 @@ async function main(): Promise<void> {
 						else activeChildSessionCounts.set(sessionID, count - 1)
 					}
 					childEntered.get(childMarker)?.resolve()
-					if (childMarker === CHILD_MARKERS[0] || childMarker === CHILD_MARKERS[3]) {
+					if (childMarker === CHILD_MARKERS[0] || childMarker === CHILD_MARKERS[3] || (RELOAD_SCENARIO_ENABLED && (childMarker === CHILD_MARKERS[6] || childMarker === CHILD_MARKERS[7]))) {
 						const gate = childRelease.get(childMarker)!
 						const aborted = deferred<void>()
 						const onAbort = () => aborted.resolve()
@@ -486,7 +512,7 @@ async function main(): Promise<void> {
 		const agentModels = ["explore", "librarian", "sisyphus-junior"].map((id) => [id, { model: MODEL }])
 		const projectConfig = {
 			$schema: "https://opencode.ai/config.json",
-			plugins: [PLUGIN_DIR, originHookDirectory],
+			plugins: initialPluginOrder,
 			enabled_providers: ["omoqa"],
 			model: MODEL,
 			provider: {
@@ -510,6 +536,11 @@ async function main(): Promise<void> {
 			experimental: { subagent_depth: 1 },
 			permission: { edit: "deny", shell: "deny" },
 		}
+		const writeProjectPluginsAtomically = async (plugins: string[]) => {
+			const temporaryConfig = join(project, `.opencode.json.qa-${randomUUID()}.tmp`)
+			await writeFile(temporaryConfig, `${JSON.stringify({ ...projectConfig, plugins }, null, 2)}\n`, "utf8")
+			await rename(temporaryConfig, join(project, "opencode.json"))
+		}
 		await writeFile(join(project, "opencode.json"), `${JSON.stringify(projectConfig, null, 2)}\n`, "utf8")
 		await mkdir(join(project, ".omo"), { recursive: true })
 		await writeFile(join(project, ".omo", "omo.jsonc"), `${JSON.stringify({
@@ -524,21 +555,7 @@ async function main(): Promise<void> {
 
 		serverProcess = Bun.spawn([OPENCODE_BIN, "--print-logs", "--log-level", "debug", "serve", "--hostname", "127.0.0.1", "--port", String(port)], {
 			cwd: canonicalProject,
-			env: {
-				PATH: process.env.PATH ?? "/usr/bin:/bin",
-				TMPDIR: isolatedTmp,
-				HOME: home,
-				XDG_DATA_HOME: xdgData,
-				XDG_CONFIG_HOME: xdgConfig,
-				XDG_STATE_HOME: xdgState,
-				XDG_CACHE_HOME: xdgCache,
-				OPENCODE_DB: dbPath,
-				OMO_HOME: omoHome,
-				OPENCODE_DISABLE_MODELS_FETCH: "1",
-				OPENCODE_TELEMETRY_DISABLED: "1",
-				OPENCODE_SERVER_PASSWORD: QA_PASSWORD,
-				OPENCODE_PASSWORD: QA_PASSWORD,
-			},
+			env: childEnvironment,
 			stdout: "pipe", stderr: "pipe",
 		})
 		stdoutTask = new Response(serverProcess.stdout as ReadableStream<Uint8Array>).text().then((value) => { stdout += value })
@@ -634,7 +651,7 @@ async function main(): Promise<void> {
 		}, timeoutMs)
 			return found!
 		}
-		const waitChildRequest = async (marker: ChildMarker) => within(`child model request ${marker}`, childEntered.get(marker)!.promise)
+		const waitChildRequest = async (marker: ChildMarker, timeoutMs = TIMEOUT_MS) => within(`child model request ${marker}`, childEntered.get(marker)!.promise, timeoutMs)
 		const currentSessionRows = () => sessionRows(dbPath, canonicalProject)
 		const waitPromptSettlement = async (run: { marker: string; settled: Promise<{ ok: boolean; error?: string }> }) => within(`parent prompt ${run.marker}`, run.settled)
 	const startQueueAction = async (title: string, promptMarker: string, expectedQueued: boolean, parentAgent?: string) => {
@@ -715,6 +732,75 @@ async function main(): Promise<void> {
 		const depthTranscript = await client.message.list({ sessionID: depthChild.id })
 		assert("native depth cap refuses the nested execution without a grandchild", depthParentSettled.ok && nestedGrandchildren.length === 0 && JSON.stringify(depthTranscript).includes("Subagent depth limit reached (1)"), { nestedGrandchildren, transcript: depthTranscript.data })
 
+		let reloadParentSessionID: string | undefined
+		let reloadNextParentSessionID: string | undefined
+		if (RELOAD_SCENARIO_ENABLED) {
+			assert("reload scenario orders the origin probe before OMO for prefix-preserving activation", initialPluginOrder[0] === originHookDirectory && initialPluginOrder[1] === PLUGIN_DIR, initialPluginOrder)
+			const reloadParent = await createParent("admission QA offline reload lease")
+			reloadParentSessionID = reloadParent.id
+			const reloadRun = await startPrompt(reloadParent.id, "OMO_PARENT_RELOAD_HELD")
+			await waitChildRequest(CHILD_MARKERS[6], 30_000)
+			const reloadLease = await waitLease(reloadParent.id, "running", "new", 30_000)
+			const reloadChild = childForParent(reloadParent.id)
+			assert("fresh held child is bound with a null idle baseline", Boolean(reloadChild && reloadLease.childSessionID === reloadChild.id && reloadLease.baselineIdle === null), { reloadChild, reloadLease })
+			if (!reloadChild) throw new Error("reload scenario child session was not created")
+			const reloadParentSettled = await waitPromptSettlement(reloadRun)
+			assert("held background invocation has returned while its provider response is pending", reloadParentSettled.ok && activeChildMarkers.has(CHILD_MARKERS[6]), reloadParentSettled)
+
+			const serverInfoBefore = await client.server.info()
+			const pluginsBefore = await client.plugin.list()
+			assert("OMO and the origin probe are both active before the config reload", pluginsBefore.data.some((plugin) => plugin.id === "oh-my-openagent" && plugin.state.status === "active") && pluginsBefore.data.some((plugin) => plugin.id === "omo-native-admission-origin-probe" && plugin.state.status === "active"), pluginsBefore.data)
+			const withoutOmo = [originHookDirectory, "-oh-my-openagent"]
+			reloadScenarioEvidence = { ...reloadScenarioEvidence, serverPidBefore: serverInfoBefore.pid, parentSessionID: reloadParent.id, childSessionID: reloadChild?.id, leaseBeforeDisable: reloadLease, disabledPluginConfig: withoutOmo }
+			await writeProjectPluginsAtomically(withoutOmo)
+			await waitFor("OMO absent while the origin probe remains active", async () => {
+				const current = await client!.plugin.list()
+				return !current.data.some((plugin) => plugin.id === "oh-my-openagent") && current.data.some((plugin) => plugin.id === "omo-native-admission-origin-probe" && plugin.state.status === "active")
+			}, 30_000)
+			const [pluginsDuring, serverInfoDuring, agentsDuring] = await Promise.all([client.plugin.list(), client.server.info(), client.agent.list()])
+			originProbeActive = pluginsDuring.data.some((plugin) => plugin.id === "omo-native-admission-origin-probe" && plugin.state.status === "active")
+			assert("config reload removes only OMO and keeps the origin probe active", !pluginsDuring.data.some((plugin) => plugin.id === "oh-my-openagent") && originProbeActive, pluginsDuring.data)
+			assert("public server remains healthy in the same process while OMO is absent", serverInfoBefore.version.includes("2.0.18") && serverInfoDuring.version === serverInfoBefore.version && serverInfoDuring.pid === serverInfoBefore.pid && serverInfoDuring.pid === serverProcess?.pid && agentsDuring.data.some((agent) => agent.id === "explore"), { processPid: serverProcess?.pid, before: serverInfoBefore, during: serverInfoDuring, agentCount: agentsDuring.data.length })
+			reloadScenarioEvidence = { ...reloadScenarioEvidence, pluginIdsWhileAbsent: pluginsDuring.data.map((plugin) => plugin.id), serverPidWhileAbsent: serverInfoDuring.pid, healthyAgentCountWhileAbsent: agentsDuring.data.length, originProbeActiveWhileAbsent: originProbeActive }
+
+			childRelease.get(CHILD_MARKERS[6])!.resolve()
+			await waitFor("held child succeeds while OMO remains absent", async () => {
+				const [child, currentPlugins] = await Promise.all([client!.session.get({ sessionID: reloadChild.id }), client!.plugin.list()])
+				return child.outcome === "succeeded" && !currentPlugins.data.some((plugin) => plugin.id === "oh-my-openagent") && currentPlugins.data.some((plugin) => plugin.id === "omo-native-admission-origin-probe" && plugin.state.status === "active")
+			}, 45_000)
+			const reloadChildWhileOmoAbsent = await client.session.get({ sessionID: reloadChild.id })
+			const heldRequest = observations.find((request) => request.childMarker === CHILD_MARKERS[6])
+			const leaseWhileOmoAbsent = leaseForParent(reloadParent.id, "new")
+			assert("native child completes while OMO is absent and its offline lease remains unreconciled", reloadChildWhileOmoAbsent.outcome === "succeeded" && heldRequest?.responsePlan === "released text completion" && !heldRequest.aborted && leaseWhileOmoAbsent?.status === "running", { outcome: reloadChildWhileOmoAbsent.outcome, heldRequest, leaseWhileOmoAbsent })
+			reloadScenarioEvidence = { ...reloadScenarioEvidence, childOutcomeWhileOmoAbsent: reloadChildWhileOmoAbsent.outcome, heldRequestPlan: heldRequest?.responsePlan, leaseWhileOmoAbsent }
+
+			await writeProjectPluginsAtomically(initialPluginOrder)
+			await waitFor("OMO and origin probe reactivate from the restored exact plugin order", async () => {
+				const [current, agents] = await Promise.all([client!.plugin.list(), client!.agent.list()])
+				return current.data.some((plugin) => plugin.id === "oh-my-openagent" && plugin.state.status === "active") && current.data.some((plugin) => plugin.id === "omo-native-admission-origin-probe" && plugin.state.status === "active") && agents.data.some((agent) => agent.id === "sisyphus")
+			}, 45_000)
+			const restoredPlugins = await client.plugin.list()
+			originProbeActive = restoredPlugins.data.some((plugin) => plugin.id === "omo-native-admission-origin-probe" && plugin.state.status === "active")
+			assert("restored config uses the exact original plugin order and reactivates OMO", JSON.stringify(initialPluginOrder) === JSON.stringify([originHookDirectory, PLUGIN_DIR]) && restoredPlugins.data.some((plugin) => plugin.id === "oh-my-openagent" && plugin.state.status === "active") && originProbeActive, restoredPlugins.data)
+			const reconciledLease = await waitLease(reloadParent.id, "terminal", "new", 30_000)
+			assert("restored OMO reconciles the offline-completed null-baseline lease", reconciledLease.childSessionID === reloadChild.id && reconciledLease.outcome === "succeeded", reconciledLease)
+			reloadScenarioEvidence = { ...reloadScenarioEvidence, pluginIdsAfterRestore: restoredPlugins.data.map((plugin) => plugin.id), leaseAfterRestore: reconciledLease }
+
+			const nextParent = await createParent("admission QA child after offline lease recovery")
+			reloadNextParentSessionID = nextParent.id
+			const nextRun = await startPrompt(nextParent.id, "OMO_PARENT_RELOAD_NEXT")
+			await waitChildRequest(CHILD_MARKERS[7], 30_000)
+			const nextLease = await waitLease(nextParent.id, "running", "new", 30_000)
+			const nextChild = childForParent(nextParent.id)
+			if (!nextChild) throw new Error("post-reload child session was not created")
+			childRelease.get(CHILD_MARKERS[7])!.resolve()
+			await waitFor("post-reload child succeeds", async () => (await client!.session.get({ sessionID: nextChild.id })).outcome === "succeeded", 30_000)
+			const nextParentSettled = await waitPromptSettlement(nextRun)
+			const terminalNextLease = await waitLease(nextParent.id, "terminal", "new", 30_000)
+			assert("next wrapped child starts and completes after the reconciled lease frees concurrency one", nextParentSettled.ok && nextLease.childSessionID === nextChild.id && terminalNextLease.outcome === "succeeded" && leaseForParent(reloadParent.id, "new")?.status === "terminal", { nextParentSettled, nextChild, nextLease, terminalNextLease, oldLease: leaseForParent(reloadParent.id, "new") })
+			reloadScenarioEvidence = { ...reloadScenarioEvidence, nextParentSessionID: nextParent.id, nextChildSessionID: nextChild.id, nextChildOutcome: (await client.session.get({ sessionID: nextChild.id })).outcome, nextLease: terminalNextLease }
+		}
+
 			const allSessions = currentSessionRows()
 			const allLeases = leaseRows(dbPath)
 		const childObservations = observations.filter((request) => request.role === "child")
@@ -737,10 +823,11 @@ async function main(): Promise<void> {
 			modelCatalog: [...availableModels].sort(),
 			modelDefault: selectedModel(modelDefault.data),
 			activeMcpNames: mcpRegistry.data.map((item) => item.name),
+			reloadScenario: reloadScenarioEvidence,
 			childModelChecks,
-			parentSessions: [directParent.id, task.session.id, callAgent.session.id, follower.session.id, depthParent.id],
+			parentSessions: [directParent.id, task.session.id, callAgent.session.id, follower.session.id, depthParent.id, reloadParentSessionID, reloadNextParentSessionID].filter((id): id is string => Boolean(id)),
 			children: allSessions.filter((row) => row.parentID !== null).map((row) => ({ id: row.id, parentID: row.parentID, agent: row.agent, model: row.model ? JSON.parse(row.model) : null, outcome: row.idleOutcome, timeIdle: row.timeIdle })),
-			leases: allLeases.map(({ leaseID, rootSessionID, parentSessionID, childSessionID, model, childDepth, mode, status, generation, outcome }) => ({ leaseID, rootSessionID, parentSessionID, childSessionID, model, childDepth, mode, status, generation, outcome })),
+			leases: allLeases.map(({ leaseID, rootSessionID, parentSessionID, childSessionID, model, childDepth, mode, status, generation, outcome, baselineIdle }) => ({ leaseID, rootSessionID, parentSessionID, childSessionID, model, childDepth, mode, status, generation, outcome, baselineIdle })),
 			mockRequests: observations,
 			childRequestOrder: requestOrder,
 			primaryChildObservationCount: childObservations.length,
@@ -784,6 +871,7 @@ async function main(): Promise<void> {
 		const sourceHashes = Object.fromEntries(await Promise.all(sourceFiles.map(async (file) => [file, createHash("sha256").update(await readFile(join(ROOT, file))).digest("hex")])))
 		const finalEvidence = {
 			...output,
+			reloadScenario: reloadScenarioEvidence,
 			temporaryRoot: tempRoot,
 			canonicalProjectDirectory: canonicalProject,
 			evidenceDirectory: evidence,
@@ -811,6 +899,7 @@ async function main(): Promise<void> {
 			`- Evidence directory: ${evidence}`,
 			`- Isolated runtime state: ${tempRoot}`,
 			"- DB inspection used readonly SQLite connections to OPENCODE_DB under that isolated temporary root.",
+			`- Offline plugin reload scenario: ${RELOAD_SCENARIO_ENABLED ? "enabled" : "not requested"}. Set OPENCODE2_ADMISSION_RELOAD_SCENARIO=1 to run it.`,
 			"- Local-only scope is claimed only if exact-model, default-model, no-MCP, and child-model assertions all passed; see runtime.json otherwise.",
 		].join("\n") + "\n", "utf8")
 		const manifestFiles = ["runtime.json", "mock-requests.json", "server.log", "QA-SUMMARY.md"]
