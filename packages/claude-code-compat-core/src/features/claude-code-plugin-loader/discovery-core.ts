@@ -27,7 +27,7 @@ export function discoverInstalledPlugins(options?: PluginLoaderOptions): PluginL
   const settingsEnabledPlugins = settings?.enabledPlugins
   const overrideEnabledPlugins = options?.enabledPluginsOverride
   const pluginManifestLoader = options?.loadPluginManifestOverride ?? loadPluginManifest
-  const cwd = process.cwd()
+  const projectDirectory = options?.projectDirectory ?? process.cwd()
 
   for (const [pluginKey, installation] of extractPluginEntries(db)) {
     if (!installation) continue
@@ -37,10 +37,10 @@ export function discoverInstalledPlugins(options?: PluginLoaderOptions): PluginL
       continue
     }
 
-    if (!shouldLoadPluginForCwd(installation, cwd)) {
-      log(`Skipping ${installation.scope}-scoped plugin outside current cwd: ${pluginKey}`, {
+    if (!shouldLoadPluginForCwd(installation, projectDirectory)) {
+      log(`Skipping ${installation.scope}-scoped plugin outside active project directory: ${pluginKey}`, {
         projectPath: installation.projectPath,
-        cwd,
+        projectDirectory,
       })
       continue
     }

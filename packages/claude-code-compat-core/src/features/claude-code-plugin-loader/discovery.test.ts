@@ -166,6 +166,41 @@ describe("discoverInstalledPlugins", () => {
   })
 
   describe("#given project-scoped entries in v1 format", () => {
+    it("uses the explicit project directory without changing the process cwd", async () => {
+      //#given
+      const pluginsHome = process.env.CLAUDE_PLUGINS_HOME as string
+      const processDirectory = process.cwd()
+      const projectDirectory = createTemporaryDirectory("omo-v1-project-option-")
+      const installPath = createInstallPath("omo-v1-install-")
+      writeDatabase(pluginsHome, {
+        version: 1,
+        plugins: {
+          "explicit-project-plugin@market": {
+            scope: "project",
+            projectPath: projectDirectory,
+            installPath,
+            version: "1.0.0",
+            installedAt: "2026-03-25T00:00:00Z",
+            lastUpdated: "2026-03-25T00:00:00Z",
+          },
+        },
+      })
+
+      //#when
+      const { discoverInstalledPlugins } = await import(`./discovery?t=${Date.now()}-explicit-project-directory`)
+      const discovered = discoverInstalledPlugins({
+        pluginsHomeOverride: pluginsHome,
+        projectDirectory,
+        loadPluginManifestOverride: () => null,
+      })
+
+      //#then
+      expect(process.cwd()).toBe(processDirectory)
+      expect(discovered.errors).toHaveLength(0)
+      expect(discovered.plugins).toHaveLength(1)
+      expect(discovered.plugins[0]?.name).toBe("explicit-project-plugin")
+    })
+
     it("#when cwd matches projectPath #then the plugin loads", async () => {
       //#given
       const pluginsHome = process.env.CLAUDE_PLUGINS_HOME as string

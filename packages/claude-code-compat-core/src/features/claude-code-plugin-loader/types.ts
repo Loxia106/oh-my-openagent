@@ -233,6 +233,12 @@ export interface ClaudeSettings {
  */
 export interface PluginLoaderOptions {
   /**
+   * Project directory used to filter project/local installations.
+   * Defaults to process.cwd() for existing callers.
+   */
+  projectDirectory?: string
+
+  /**
    * Override the plugins home directory for testing.
    * If not provided, uses CLAUDE_PLUGINS_HOME env var or ~/.claude/plugins
    */

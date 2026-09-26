@@ -93,6 +93,7 @@ function createHost(
 			synthetic: async (input: unknown) => { syntheticCalls.push(input) },
 		},
 		command: {
+			list: async () => ({ data: [] }),
 			transform: async (callback: (editor: { add: (command: RegisteredCommand) => void }) => void) => {
 				callback({ add: (command) => commands.set(command.name, command) })
 				return { dispose: async () => { registrationDisposed = true } }
@@ -122,11 +123,39 @@ async function createDirectory(prefix: string): Promise<string> {
 }
 
 async function register(host: ReturnType<typeof createHost>, config: OhMyOpenCodeConfig = {}) {
-	const cleanup = await registerV2Commands(host.ctx, config)
+	// Builtin-command tests should not consult the real user's Claude directories.
+	const testConfig = { ...config, claude_code: { ...config.claude_code, commands: false, plugins: false } }
+	const cleanup = await registerV2Commands(host.ctx, testConfig)
 	return { cleanup, commands: host.commands }
 }
 
 describe("native OpenCode 2 builtin commands", () => {
+	test("registers a Claude command through the shared loader and native command transform", async () => {
+		const directory = await createDirectory("omo-v2-command-imported-")
+		const claudeConfig = join(directory, "claude-config")
+		const previousClaudeConfig = process.env.CLAUDE_CONFIG_DIR
+		try {
+			process.env.CLAUDE_CONFIG_DIR = claudeConfig
+			await mkdir(join(claudeConfig, "commands"), { recursive: true })
+			await mkdir(join(directory, ".claude", "commands"), { recursive: true })
+			await writeFile(join(claudeConfig, "commands", "user-command.md"), "---\ndescription: User command\n---\nUser task: $ARGUMENTS")
+			await writeFile(join(directory, ".claude", "commands", "project-command.md"), "---\ndescription: Project command\n---\nProject task: ${user_message}")
+			const host = createHost(directory)
+			const cleanup = await registerV2Commands(host.ctx, { claude_code: { commands: true, plugins: false } })
+
+			expect(host.commands.has("user-command")).toBe(true)
+			expect(host.commands.has("project-command")).toBe(true)
+			await host.commands.get("user-command")!.execute(commandInput("release it"))
+			await host.commands.get("project-command")!.execute(commandInput("verify it"))
+			expect((host.promptCalls[0] as { text: string }).text).toContain("User task: release it")
+			expect((host.promptCalls[1] as { text: string }).text).toContain("Project task: verify it")
+			await cleanup()
+		} finally {
+			if (previousClaudeConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR
+			else process.env.CLAUDE_CONFIG_DIR = previousClaudeConfig
+		}
+	})
+
 	test("registers /ulw-execute with native Atlas switch, recent-plan context, and session-scoped Boulder", async () => {
 		const directory = await createDirectory("omo-v2-command-ulw-")
 		const plans = join(directory, ".omo", "plans")

@@ -20,6 +20,7 @@ import {
 	type NativeCommandInvocation,
 	type AssertV2CommandActive,
 } from "./command-dispatch"
+import { registerV2CustomCommands } from "./custom-commands"
 
 const CONTEXT_INFO_MARKER = "<!-- omo-ulw-execute-context -->"
 
@@ -240,8 +241,12 @@ export async function registerV2Commands(
 	})
 	const gate = createV2CommandDispatchGate()
 	let active = true
-	let registration: Awaited<ReturnType<typeof ctx.command.transform>>
+	let customCleanup: (() => Promise<void>) | undefined
+	let registration: Awaited<ReturnType<typeof ctx.command.transform>> | undefined
 	try {
+		// Register imported commands first so their collision snapshot contains only
+		// host-owned names; custom-commands.ts separately reserves every OMO builtin.
+		customCleanup = await registerV2CustomCommands(ctx, config)
 		registration = await ctx.command.transform((editor) => {
 			for (const command of Object.values(commands)) {
 				editor.add({
@@ -260,7 +265,26 @@ export async function registerV2Commands(
 			}
 		})
 	} catch (error) {
+		active = false
 		gate.dispose()
+		const cleanupErrors: unknown[] = []
+		if (registration) {
+			try {
+				await registration.dispose()
+			} catch (cleanupError) {
+				cleanupErrors.push(cleanupError)
+			}
+		}
+		if (customCleanup) {
+			try {
+				await customCleanup()
+			} catch (cleanupError) {
+				cleanupErrors.push(cleanupError)
+			}
+		}
+		if (cleanupErrors.length > 0) {
+			throw new AggregateError([error, ...cleanupErrors], "Native command registration failed and cleanup was incomplete")
+		}
 		throw error
 	}
 
@@ -269,7 +293,18 @@ export async function registerV2Commands(
 		cleanupPromise ??= (async () => {
 			active = false
 			gate.dispose()
-			await registration.dispose()
+			const errors: unknown[] = []
+			for (const cleanup of [
+				() => registration?.dispose(),
+				() => customCleanup?.(),
+			]) {
+				try {
+					await cleanup()
+				} catch (error) {
+					errors.push(error)
+				}
+			}
+			if (errors.length > 0) throw new AggregateError(errors, "One or more native command registrations failed to clean up")
 		})()
 		return cleanupPromise
 	}
