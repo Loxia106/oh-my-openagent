@@ -213,7 +213,7 @@ export function createUlwExecuteHook(ctx: PluginInput) {
         })
 
     const contextInfo = buildUlwExecuteContextInfo({
-      ctx,
+      directory: ctx.directory,
       explicitPlanName,
       existingState,
       sessionId,

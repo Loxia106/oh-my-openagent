@@ -6,10 +6,11 @@ import {
   selectActiveWork,
 } from "../../features/boulder-state"
 import { log } from "../../shared/logger"
-import { HOOK_NAME } from "./ulw-execute-hook"
 import { buildAutoSelectedPlanContextInfoOnly, buildExistingSessionContext } from "./context-info-formatters"
 import { buildMissingPlanContext, findPlanByName } from "./plan-selection"
 import { createNewWorkOrInitialize } from "./work-initializer"
+
+const HOOK_NAME = "ulw-execute"
 
 export function buildExplicitPlanContext(params: {
   readonly explicitPlanName: string

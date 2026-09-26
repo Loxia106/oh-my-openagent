@@ -3,6 +3,7 @@ import { loadV2Config } from "./config"
 import { registerV2Hooks } from "./hooks"
 import { registerV2Registries } from "./registry"
 import { registerV2Tools } from "./tools"
+import { registerV2Commands } from "./commands"
 import { log } from "../shared/logger"
 
 async function unwind(cleanups: Array<() => Promise<void>>): Promise<unknown[]> {
@@ -30,6 +31,7 @@ export async function setupV2(ctx: Plugin.Context): Promise<() => Promise<void>>
 		cleanups.push(await registerV2Registries(ctx, nativeConfig))
 		cleanups.push(await registerV2Tools(ctx, nativeConfig))
 		cleanups.push(await registerV2Hooks(ctx, nativeConfig))
+		cleanups.push(await registerV2Commands(ctx, nativeConfig))
 	} catch (error) {
 		const cleanupErrors = await unwind(cleanups)
 		if (cleanupErrors.length > 0) {

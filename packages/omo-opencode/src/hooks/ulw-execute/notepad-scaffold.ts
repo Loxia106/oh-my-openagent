@@ -3,7 +3,8 @@
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { log } from "../../shared/logger"
-import { HOOK_NAME } from "./ulw-execute-hook"
+
+const HOOK_NAME = "ulw-execute"
 
 export const NOTEPAD_FILES = [
   "learnings.md",

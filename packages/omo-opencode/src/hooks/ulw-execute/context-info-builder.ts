@@ -7,7 +7,6 @@ import {
 } from "../../features/boulder-state"
 import type { BoulderState } from "../../features/boulder-state"
 import { log } from "../../shared/logger"
-import type { PluginInput } from "@opencode-ai/plugin"
 import { buildExistingSessionContext, buildMultipleActiveWorksContext } from "./context-info-formatters"
 import { buildExplicitPlanContext } from "./explicit-plan-context"
 import {
@@ -16,10 +15,11 @@ import {
   shouldResumeExistingState,
   shouldResumeSingleWorkOption,
 } from "./plan-discovery-context"
-import { HOOK_NAME } from "./ulw-execute-hook"
+
+const HOOK_NAME = "ulw-execute"
 
 export function buildUlwExecuteContextInfo(params: {
-  readonly ctx: PluginInput
+  readonly directory: string
   readonly explicitPlanName: string | null
   readonly existingState: ReturnType<typeof readBoulderState>
   readonly sessionId: string
@@ -30,7 +30,7 @@ export function buildUlwExecuteContextInfo(params: {
   readonly preferredPlanPath?: string | null
 }): string {
   const {
-    ctx,
+    directory,
     explicitPlanName,
     existingState,
     sessionId,
@@ -40,7 +40,6 @@ export function buildUlwExecuteContextInfo(params: {
     worktreeBlock,
     preferredPlanPath = null,
   } = params
-  const directory = ctx.directory
   const resumeOptions = getWorkResumeOptions(directory).filter(
     (option) => option.status === "active" || option.status === "paused",
   )

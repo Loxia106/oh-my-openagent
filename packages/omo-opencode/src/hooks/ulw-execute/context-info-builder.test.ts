@@ -20,12 +20,6 @@ import * as boulderState from "../../features/boulder-state"
 describe("buildUlwExecuteContextInfo", () => {
   let testDirectory = ""
 
-  function createPluginInput() {
-    return {
-      directory: testDirectory,
-    } as never
-  }
-
   function writePlan(planName: string, content: string): string {
     const plansDirectory = join(testDirectory, ".omo", "plans")
     mkdirSync(plansDirectory, { recursive: true })
@@ -65,7 +59,7 @@ describe("buildUlwExecuteContextInfo", () => {
 
     // when
     const contextInfo = buildUlwExecuteContextInfo({
-      ctx: createPluginInput(),
+      directory: testDirectory,
       explicitPlanName: null,
       existingState: readExistingState(),
       sessionId: "session-current",
@@ -90,7 +84,7 @@ describe("buildUlwExecuteContextInfo", () => {
 
     // when
     const contextInfo = buildUlwExecuteContextInfo({
-      ctx: createPluginInput(),
+      directory: testDirectory,
       explicitPlanName: null,
       existingState: readExistingState(),
       sessionId: "session-current",
@@ -122,7 +116,7 @@ describe("buildUlwExecuteContextInfo", () => {
 
     // when
     const contextInfo = buildUlwExecuteContextInfo({
-      ctx: createPluginInput(),
+      directory: testDirectory,
       explicitPlanName: "explicit-plan-a",
       existingState: readExistingState(),
       sessionId: "session-current",
@@ -150,7 +144,7 @@ describe("buildUlwExecuteContextInfo", () => {
 
     // when
     const contextInfo = buildUlwExecuteContextInfo({
-      ctx: createPluginInput(),
+      directory: testDirectory,
       explicitPlanName: null,
       existingState: null,
       sessionId: "session-current",
@@ -175,7 +169,7 @@ describe("buildUlwExecuteContextInfo", () => {
 
     // when
     const contextInfo = buildUlwExecuteContextInfo({
-      ctx: createPluginInput(),
+      directory: testDirectory,
       explicitPlanName: null,
       existingState: null,
       sessionId: "session-current",
@@ -206,7 +200,7 @@ describe("buildUlwExecuteContextInfo", () => {
 
     // when
     const contextInfo = buildUlwExecuteContextInfo({
-      ctx: createPluginInput(),
+      directory: testDirectory,
       explicitPlanName: null,
       existingState: readExistingState(),
       sessionId: "session-current",
@@ -251,7 +245,7 @@ describe("buildUlwExecuteContextInfo", () => {
 
     // when
     const contextInfo = buildUlwExecuteContextInfo({
-      ctx: createPluginInput(),
+      directory: testDirectory,
       explicitPlanName: "completed-plan",
       existingState: readExistingState(),
       sessionId: "session-current",
@@ -277,7 +271,7 @@ describe("buildUlwExecuteContextInfo", () => {
 
     // when
     const contextInfo = buildUlwExecuteContextInfo({
-      ctx: createPluginInput(),
+      directory: testDirectory,
       explicitPlanName: null,
       existingState: readExistingState(),
       sessionId: "session-current",
@@ -300,7 +294,7 @@ describe("buildUlwExecuteContextInfo", () => {
 
     // when
     const contextInfo = buildUlwExecuteContextInfo({
-      ctx: createPluginInput(),
+      directory: testDirectory,
       explicitPlanName: "mot-vat-notifications-plan",
       existingState: null,
       sessionId: "session-current",
@@ -326,7 +320,7 @@ describe("buildUlwExecuteContextInfo", () => {
 
     // when
     const contextInfo = buildUlwExecuteContextInfo({
-      ctx: createPluginInput(),
+      directory: testDirectory,
       explicitPlanName: "unmatched-plan",
       existingState: null,
       sessionId: "session-current",
@@ -377,7 +371,7 @@ describe("buildUlwExecuteContextInfo", () => {
 
     // when
     buildUlwExecuteContextInfo({
-      ctx: createPluginInput(),
+      directory: testDirectory,
       explicitPlanName: "new-plan-c",
       existingState: readExistingState(),
       sessionId: "session-c",
@@ -407,7 +401,7 @@ describe("buildUlwExecuteContextInfo", () => {
 
       // when
       buildUlwExecuteContextInfo({
-        ctx: createPluginInput(),
+        directory: testDirectory,
         explicitPlanName: null,
         existingState: null,
         sessionId: "session-current",
@@ -431,7 +425,7 @@ describe("buildUlwExecuteContextInfo", () => {
 
       // when
       buildUlwExecuteContextInfo({
-        ctx: createPluginInput(),
+        directory: testDirectory,
         explicitPlanName: "explicit-scaffold-plan",
         existingState: null,
         sessionId: "session-current",
@@ -457,7 +451,7 @@ describe("buildUlwExecuteContextInfo", () => {
 
       // when
       buildUlwExecuteContextInfo({
-        ctx: createPluginInput(),
+        directory: testDirectory,
         explicitPlanName: null,
         existingState: readExistingState(),
         sessionId: "session-current",
@@ -490,7 +484,7 @@ describe("buildUlwExecuteContextInfo", () => {
 
       // when
       buildUlwExecuteContextInfo({
-        ctx: createPluginInput(),
+        directory: testDirectory,
         explicitPlanName: null,
         existingState: readExistingState(),
         sessionId: "session-current",

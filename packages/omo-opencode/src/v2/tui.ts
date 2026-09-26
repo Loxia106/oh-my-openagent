@@ -3,6 +3,7 @@ import type { JSX } from "@opentui/solid/jsx-runtime"
 import { createComponent, createSignal } from "solid-js"
 import { createNativeBtwDispatcher } from "./btw-dispatch"
 import { loadV2Config } from "./config"
+import { listenForNativeCommandNotices } from "./command-notice"
 
 type SolidRuntime = {
 	createElement(tag: string): unknown
@@ -98,8 +99,33 @@ export async function setupV2Tui(ctx: TuiContext): Promise<() => void> {
 	let disposeSlot: (() => void) | undefined
 	let disposeKeymapSlot: (() => void) | undefined
 	let disposeEvents: (() => void) | undefined
+	let disposeCommandNotices: (() => void) | undefined
 	let active = true
+	let disposed = false
 	const btwDispatcher = createNativeBtwDispatcher(ctx.client.session)
+	const dispose = () => {
+		if (disposed) return
+		disposed = true
+		active = false
+		const errors: unknown[] = []
+		for (const cleanup of [
+			() => btwDispatcher.dispose(),
+			() => disposeEvents?.(),
+			() => disposeSlot?.(),
+			() => disposeKeymapSlot?.(),
+			() => disposeCommandNotices?.(),
+		]) {
+			try {
+				cleanup()
+			} catch (error) {
+				errors.push(error)
+			}
+		}
+		if (errors.length > 0) throw new AggregateError(errors, "One or more native TUI registrations failed to clean up")
+	}
+
+	try {
+		disposeCommandNotices = listenForNativeCommandNotices(ctx, () => active)
 
 	// Keymap.layer reads the host's Solid Keymap context and registers cleanup on
 	// the current component owner. Plugin setup runs outside that provider, so the
@@ -175,14 +201,16 @@ export async function setupV2Tui(ctx: TuiContext): Promise<() => void> {
 			}
 		})
 	}
-
-	return () => {
-		active = false
-		btwDispatcher.dispose()
-		disposeEvents?.()
-		disposeSlot?.()
-		disposeKeymapSlot?.()
+	} catch (error) {
+		try {
+			dispose()
+		} catch (cleanupError) {
+			throw new AggregateError([error, cleanupError], "Native TUI setup failed and cleanup was incomplete")
+		}
+		throw error
 	}
+
+	return dispose
 }
 
 export { btwQuestion }
