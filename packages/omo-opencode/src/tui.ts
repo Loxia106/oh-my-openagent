@@ -1,4 +1,5 @@
 import type { TuiPluginModule } from "@opencode-ai/plugin/tui"
+import { setupV2Tui } from "./v2/tui"
 
 import { registerBtwSideTui } from "./features/btw-side"
 import { registerNativeEditionNudgeTui } from "./features/native-edition-nudge"
@@ -117,8 +118,9 @@ export function handleTuiPollError(
   throw error
 }
 
-const module: TuiPluginModule = {
+const module: TuiPluginModule & { readonly setup: typeof setupV2Tui } = {
   id: "oh-my-openagent:tui",
+  setup: setupV2Tui,
   tui: async (api) => {
     // The TUI plugin runs on OpenCode's main thread, the only thread that
     // emits `exit`; it applies a sandbox refresh the server plugin requested.

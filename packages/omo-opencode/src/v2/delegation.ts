@@ -1,0 +1,740 @@
+import type { Plugin } from "@opencode/plugin"
+import { Error as ToolError, type Info, type ToolContext, type ToolEditor } from "@opencode/plugin/promise/tool"
+import { z } from "zod"
+import type { OhMyOpenCodeConfig } from "../config"
+import { DEFAULT_CATEGORIES, CATEGORY_PROMPT_APPENDS, CATEGORY_PROMPT_APPEND_RESOLVERS } from "../tools/delegate-task/builtin-categories"
+import { buildTaskPrompt } from "../tools/delegate-task/prompt-builder"
+import { parseModelString } from "../shared/model-string-parser"
+import { CATEGORY_MODEL_REQUIREMENTS } from "../shared/model-requirements"
+import { stripInvisibleAgentCharacters } from "../shared/agent-display-names"
+import { resolvePromptAppend } from "../agents/builtin-agents/resolve-file-uri"
+import { log } from "../shared/logger"
+import { addV2Tool } from "./tool-adapter"
+import { addV2LookAtTool } from "./tool-look-at"
+import { readOwnedChildSession, type V2SessionStatus } from "./session-history"
+import type { V2SubagentRunState } from "./task-state"
+
+type NativeSubagent = Info & { readonly id: string }
+type ToolConfig = Readonly<Record<string, boolean>>
+type PermissionRule = { action: string; resource: string; effect: "allow" | "ask" | "deny" }
+type DelegationAlias = "task" | "call_omo_agent"
+type AliasInvocations = Map<string, DelegationAlias>
+type SessionWithPermissions = Awaited<ReturnType<Plugin.Context["session"]["get"]>>
+type TerminalStatus = "completed" | "failed" | "interrupted"
+
+function terminalOutcome(outcome: string | undefined): TerminalStatus | undefined {
+  if (outcome === "succeeded") return "completed"
+  if (outcome === "failed") return "failed"
+  if (outcome === "interrupted") return "interrupted"
+  return undefined
+}
+
+const taskInput = z.object({
+  load_skills: z.array(z.string()).optional(),
+  description: z.string().optional(),
+  prompt: z.string(),
+  run_in_background: z.boolean().optional(),
+  category: z.string().optional(),
+  subagent_type: z.string().optional(),
+  task_id: z.string().optional(),
+  command: z.string().optional(),
+})
+
+const callAgentInput = z.object({
+  description: z.string(),
+  prompt: z.string(),
+  subagent_type: z.string(),
+  run_in_background: z.boolean(),
+  session_id: z.string().optional(),
+})
+
+const skillAliasInput = z.object({ id: z.string().optional(), name: z.string().optional() })
+
+const backgroundOutputInput = z.object({
+  task_id: z.string(),
+  block: z.boolean().optional(),
+  timeout: z.number().positive().optional(),
+  full_session: z.boolean().optional(),
+  include_thinking: z.boolean().optional(),
+  include_tool_results: z.boolean().optional(),
+  message_limit: z.number().int().positive().optional(),
+  since_message_id: z.string().optional(),
+  from_end: z.boolean().optional(),
+  thinking_max_chars: z.number().int().nonnegative().optional(),
+})
+
+const backgroundCancelInput = z.object({
+  taskId: z.string().optional(),
+  all: z.boolean().optional(),
+})
+
+function isDisabled(values: readonly string[] | undefined, name: string): boolean {
+  return values?.some((value) => stripInvisibleAgentCharacters(value).trim().toLowerCase() === name.toLowerCase()) ?? false
+}
+
+export function resolveAgentId(requested: string, available: readonly { id: string; mode: string }[], config: OhMyOpenCodeConfig): string {
+  const candidate = stripInvisibleAgentCharacters(requested).trim()
+  if (!candidate) throw new ToolError({ message: "An agent name is required." })
+  if (isDisabled(config.disabled_agents, candidate)) {
+    throw new ToolError({ message: `Agent "${candidate}" is disabled by disabled_agents.` })
+  }
+  const agent = available.find((item) => item.id.toLowerCase() === candidate.toLowerCase())
+  if (!agent) throw new ToolError({ message: `Unknown agent "${candidate}". Available subagents: ${available.filter((item) => item.mode !== "primary").map((item) => item.id).join(", ") || "none"}.` })
+  if (agent.mode === "primary") throw new ToolError({ message: `Agent "${agent.id}" cannot run as a subagent.` })
+  const override = config.agents?.[agent.id as keyof typeof config.agents]
+  if (override?.disable) throw new ToolError({ message: `Agent "${agent.id}" is disabled by its agent configuration.` })
+  return agent.id
+}
+
+function modelString(value: string | { model: string; variant?: string } | undefined, variant?: string): string | undefined {
+  if (!value) return undefined
+  const modelText = typeof value === "string" ? value : value.model
+  const parsed = parseModelString(modelText)
+  if (!parsed) throw new ToolError({ message: `Invalid model "${modelText}". Expected provider/model.` })
+  const requestedVariant = variant ?? (typeof value === "string" ? undefined : value.variant) ?? parsed.variant
+  return `${parsed.providerID}/${parsed.modelID}${requestedVariant ? `#${requestedVariant}` : ""}`
+}
+
+type CategoryModelConfig = {
+  model?: string
+  models?: readonly (string | { model: string; variant?: string })[]
+  fallback_models?: string | readonly (string | { model: string; variant?: string })[]
+  variant?: string
+}
+
+function modelBase(value: string): string {
+  return value.split("#", 1)[0]!
+}
+
+/** Resolve only models the live V2 model registry can actually run. */
+async function resolveCategoryModel(
+  ctx: Plugin.Context,
+  name: string,
+  builtIn: CategoryModelConfig,
+  configured: CategoryModelConfig | undefined,
+): Promise<string | undefined> {
+  const available = new Set((await ctx.model.list()).data
+    .filter((model) => model.enabled)
+    .map((model) => `${model.providerID}/${model.id}`))
+  const explicit = configured !== undefined && (
+    configured.model !== undefined || (configured.models?.length ?? 0) > 0 || configured.fallback_models !== undefined
+  )
+  const entries = configured?.models
+    ?? (configured?.fallback_models === undefined
+      ? undefined
+      : typeof configured.fallback_models === "string" ? [configured.fallback_models] : configured.fallback_models)
+  const candidates = explicit
+    ? (entries?.map((entry) => modelString(entry, configured?.variant)) ?? [modelString(configured?.model, configured?.variant)])
+    : [modelString(builtIn.model, builtIn.variant), ...(builtIn.models?.map((entry) => modelString(entry, builtIn.variant)) ?? [])]
+  const selected = candidates.find((candidate) => candidate !== undefined && available.has(modelBase(candidate)))
+  if (selected) return selected
+
+  if (explicit) {
+    const requested = candidates.filter((candidate): candidate is string => candidate !== undefined)
+    throw new ToolError({
+      message: `Configured model${requested.length === 1 ? "" : " chain"} for category "${name}" is unavailable: ${requested.join(" -> ") || "no valid provider/model was configured"}. Check connected providers or update the category model configuration.`,
+    })
+  }
+
+  const requirement = CATEGORY_MODEL_REQUIREMENTS[name]
+  if (requirement) {
+    const fallback = requirement.fallbackChain.find((entry) =>
+      entry.providers.some((provider) => available.has(`${provider}/${entry.model}`)))
+    if (fallback) {
+      const provider = fallback.providers.find((candidate) => available.has(`${candidate}/${fallback.model}`))!
+      return `${provider}/${fallback.model}${fallback.variant ? `#${fallback.variant}` : ""}`
+    }
+    if (requirement.requiresAnyModel || requirement.requiresModel) {
+      const candidates = requirement.fallbackChain.map((entry) => `${entry.providers.join("|")}/${entry.model}`).join(", ")
+      throw new ToolError({ message: `Category "${name}" requires an available model, but none of its supported models are connected (${candidates}). Connect one of those providers or configure a different category.` })
+    }
+  }
+
+  return undefined
+}
+
+export function toolRestrictionsToActions(tools: ToolConfig | undefined): string[] {
+  if (!tools) return []
+  const aliases: Record<string, string> = {
+    bash: "shell",
+    shell: "shell",
+    interactive_bash: "shell",
+    apply_patch: "edit",
+    patch: "edit",
+    write: "edit",
+    edit: "edit",
+    hashline_edit: "edit",
+    task: "task",
+    delegate_task: "task",
+    call_omo_agent: "call_omo_agent",
+  }
+  return [...new Set(Object.entries(tools)
+    .filter(([, enabled]) => enabled === false)
+    .map(([name]) => aliases[name.toLowerCase()] ?? name.toLowerCase()))]
+}
+
+function wildcardMatches(value: string, pattern: string): boolean {
+  // Keep this aligned with OpenCode's Wildcard.match implementation.
+  const normalized = value.replaceAll("\\", "/")
+  let escaped = pattern.replaceAll("\\", "/").replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")
+  if (escaped.endsWith(" .*")) escaped = escaped.slice(0, -3) + "( .*)?"
+  return new RegExp(`^${escaped}$`, process.platform === "win32" ? "si" : "s").test(normalized)
+}
+
+function aliasPermissionEffect(
+  action: DelegationAlias,
+  resources: readonly string[],
+  rules: readonly PermissionRule[],
+): PermissionRule["effect"] | undefined {
+  const effects = resources.flatMap((resource) => {
+    const matched = rules.findLast((rule) => wildcardMatches(action, rule.action) && wildcardMatches(resource, rule.resource))
+    return matched ? [matched.effect] : []
+  })
+  if (effects.length === 0) return undefined
+  if (effects.includes("deny")) return "deny"
+  if (effects.includes("ask")) return "ask"
+  return "allow"
+}
+
+function invocationKey(context: { sessionID: string; messageID: string; id: string }): string {
+  return JSON.stringify([context.sessionID, context.messageID, String(context.id)])
+}
+
+async function withDelegationAlias<T>(
+  invocations: AliasInvocations,
+  action: DelegationAlias,
+  context: ToolContext,
+  execute: () => Promise<T>,
+): Promise<T> {
+  const id = invocationKey(context)
+  const previous = invocations.get(id)
+  invocations.set(id, action)
+  try {
+    return await execute()
+  } finally {
+    if (previous === undefined) invocations.delete(id)
+    else invocations.set(id, previous)
+  }
+}
+
+function evaluateRestrictions(action: string, resource: string, rules: readonly PermissionRule[]): PermissionRule["effect"] {
+  const matched = rules.filter((rule) => wildcardMatches(action, rule.action) && wildcardMatches(resource, rule.resource))
+  // Inherited permissions are a restrictive union. Allow rules never erase an ask
+  // or deny from another ancestor, regardless of the source's local rule order.
+  if (matched.some((rule) => rule.effect === "deny")) return "deny"
+  if (matched.some((rule) => rule.effect === "ask")) return "ask"
+  return "allow"
+}
+
+async function parentRestriction(
+  ctx: Plugin.Context,
+  sessionID: string,
+  action: string,
+  resource: string,
+): Promise<"allow" | "ask" | "deny"> {
+  const agents = (await ctx.agent.list()).data
+  let child: SessionWithPermissions | undefined = await ctx.session.get({ sessionID })
+  let result: "allow" | "ask" | "deny" = "allow"
+  let depth = 0
+  if (child) {
+    const current = child
+    const ownAgent = agents.find((agent) => agent.id === current.agent)
+    const ownRules = [
+      ...(ownAgent?.permissions ?? []),
+      ...((current.permissions ?? []) as PermissionRule[]),
+    ] as PermissionRule[]
+    const ownEffect = evaluateRestrictions(action, resource, ownRules)
+    if (ownEffect === "deny") return "deny"
+    if (ownEffect === "ask") result = "ask"
+  }
+  while (child?.parentID && depth < 32) {
+    const parent = await ctx.session.get({ sessionID: child.parentID })
+    const parentAgent = agents.find((agent) => agent.id === parent.agent)
+    const rules = [
+      ...(parentAgent?.permissions ?? []),
+      ...((parent.permissions ?? []) as PermissionRule[]),
+    ] as PermissionRule[]
+    const effect = evaluateRestrictions(action, resource, rules)
+    if (effect === "deny") return "deny"
+    if (effect === "ask") result = "ask"
+    child = parent
+    depth++
+  }
+  return result
+}
+
+/** Inherit restrictive ancestor agent/session permissions without copying allows. */
+export async function registerV2SubagentPermissionGuard(
+  ctx: Plugin.Context,
+  runs: V2SubagentRunState,
+  invocations: AliasInvocations = new Map(),
+) {
+  const permission = await ctx.permission.hook("evaluate", async (event) => {
+    const run = await runs.get(event.sessionID)
+    const delegatedAlias = event.action === "subagent"
+      ? (event.source
+        ? invocations.get(invocationKey({ sessionID: event.sessionID, messageID: event.source.messageID, id: event.source.id }))
+        : undefined) ?? "task"
+      : undefined
+    if (run?.blockedActions.some((blocked) =>
+      wildcardMatches(event.action, blocked) || (delegatedAlias !== undefined && wildcardMatches(delegatedAlias, blocked)))) {
+      event.effect = "deny"
+      event.message = `Blocked by the delegated task's tool restrictions (${delegatedAlias ?? event.action}).`
+      return
+    }
+
+    try {
+      let inherited: "allow" | "ask" | "deny" = "allow"
+      for (const resource of event.resources) {
+        const result = await parentRestriction(ctx, event.sessionID, event.action, resource)
+        if (result === "deny") {
+          inherited = "deny"
+          break
+        }
+        if (result === "ask") inherited = "ask"
+      }
+      if (inherited === "deny") {
+        event.effect = "deny"
+        event.message = "Blocked by an ancestor agent or session permission inherited by this subagent."
+      } else if (inherited === "ask" && event.effect === "allow") {
+        event.effect = "ask"
+        event.message = "This action requires approval under an ancestor agent's permissions."
+      }
+
+      if (event.action === "subagent" && event.resources.length > 0) {
+        const action = delegatedAlias ?? "task"
+        const [agents, session] = await Promise.all([
+          ctx.agent.list(),
+          ctx.session.get({ sessionID: event.sessionID }),
+        ])
+        const agentID = event.agent ?? session.agent
+        const agent = agents.data.find((item) => item.id === agentID)
+        const rules = [
+          ...((agent?.permissions ?? []) as PermissionRule[]),
+          ...((session.permissions ?? []) as PermissionRule[]),
+        ]
+        const effect = aliasPermissionEffect(action, event.resources, rules)
+        if (effect === "deny") {
+          event.effect = "deny"
+          event.message = `Delegation denied by the ${action} permission policy.`
+        } else if (effect === "ask" && event.effect === "allow") {
+          event.effect = "ask"
+          event.message = `Delegation requires approval under the ${action} permission policy.`
+        }
+      }
+    } catch (error) {
+      // A child ancestry lookup failure must never turn an inherited restriction into an allow.
+      if (event.effect === "allow") event.effect = "ask"
+      event.message = `Could not verify subagent permissions: ${error instanceof Error ? error.message : String(error)}`
+    }
+  })
+  let toolGuard: Awaited<ReturnType<Plugin.Context["tool"]["hook"]>> | undefined
+  try {
+    toolGuard = await ctx.tool.hook("execute.before", async (event) => {
+      const run = await runs.get(event.sessionID)
+      if (!run) return
+      if (!run.blockedActions.some((blocked) => wildcardMatches(event.tool.toLowerCase(), blocked))) return
+      throw new ToolError({ message: `Blocked by the delegated task's tool restrictions (${event.tool}).` })
+    })
+  } catch (error) {
+    await permission.dispose()
+    throw error
+  }
+  return {
+    dispose: async () => {
+      const errors: unknown[] = []
+      for (const registration of [toolGuard, permission]) {
+        try {
+          await registration?.dispose()
+        } catch (error) {
+          errors.push(error)
+        }
+      }
+      if (errors.length > 0) throw new AggregateError(errors, "Delegated permission guard cleanup failed")
+    },
+  }
+}
+
+async function loadNativeSkills(
+  native: NativeSubagent | undefined,
+  names: readonly string[],
+  config: OhMyOpenCodeConfig,
+  toolContext: ToolContext,
+) {
+  if (names.length === 0) return []
+  const resolved = []
+  for (const requested of names) {
+    if (isDisabled(config.disabled_skills, requested)) {
+      throw new ToolError({ message: `Skill "${requested}" is disabled by disabled_skills.` })
+    }
+    if (toolDisabled(config, "skill")) throw new ToolError({ message: `Skill "${requested}" cannot be loaded because the native skill tool is disabled.` })
+    if (!native) throw new ToolError({ message: `Skill "${requested}" cannot be loaded because the native V2 skill tool is unavailable.` })
+    // Execute through the native tool so skill permissions and resource loading remain in force.
+    const result = await native.execute({ id: requested }, toolContext)
+    const output = result.output as { name?: unknown; output?: unknown } | undefined
+    const content = typeof output?.output === "string"
+      ? output.output
+      : typeof result.content === "string" ? result.content : undefined
+    if (!content) throw new ToolError({ message: `Native skill tool returned no prepared content for "${requested}".` })
+    resolved.push({ name: typeof output?.name === "string" ? output.name : requested, content })
+  }
+  return resolved
+}
+
+function addPromptContext(input: {
+  prompt: string
+  category?: string
+  categoryAppend?: string
+  command?: string
+  skills?: readonly { name: string; content: string }[]
+  parentAgent: string
+}) {
+  const sections: string[] = []
+  if (input.categoryAppend) sections.push(`<OMO category: ${input.category ?? "unspecified"}>\n${input.categoryAppend}`)
+  if (input.command) sections.push(`<Triggering command>\n${input.command}`)
+  for (const skill of input.skills ?? []) {
+    sections.push(`<OMO skill: ${skill.name}>\n${skill.content}\n</OMO skill>`)
+  }
+  const taskPrompt = buildTaskPrompt(input.prompt, input.parentAgent)
+  sections.push(taskPrompt)
+  return sections.join("\n\n")
+}
+
+function toolDisabled(config: OhMyOpenCodeConfig, name: string): boolean {
+  return isDisabled(config.disabled_tools, name)
+}
+
+function registerToolAliases(input: {
+  editor: ToolEditor
+  ctx: Plugin.Context
+  config: OhMyOpenCodeConfig
+  native: NativeSubagent
+  nativeSkill?: NativeSubagent
+  runs: V2SubagentRunState
+  childSessions: Map<string, Set<string>>
+  invocations: AliasInvocations
+}) {
+  const { editor, ctx, config, native, nativeSkill, runs, childSessions, invocations } = input
+  const nativeRead = editor.get("read")
+
+  const launch = async (
+    request: { agent: string; description: string; prompt: string; model?: string; sessionID?: string; background: boolean; blockedActions?: string[] },
+    toolContext: ToolContext,
+  ) => {
+    // Agent transforms can change the visible catalog after tool transforms run.
+    // Resolve at invocation time so validation matches the current native registry.
+    const agents = (await ctx.agent.list()).data
+    const agentID = resolveAgentId(request.agent, agents, config)
+    if (request.sessionID) {
+      const existing = await readOwnedChildSession(ctx, toolContext.sessionID, request.sessionID)
+      if (existing.agent !== agentID) {
+        throw new ToolError({ message: `Cannot continue session ${request.sessionID} as a different agent; this would change its permission profile.` })
+      }
+    }
+
+    const inheritedProgress: ToolContext["progress"] = async (metadata) => {
+      const data = metadata as Record<string, unknown>
+      const childSessionID = typeof data.sessionID === "string" ? data.sessionID : undefined
+      if (childSessionID) {
+        const startedAt = Date.now()
+        const blockedActions = request.blockedActions ?? []
+        await runs.recordLaunch(childSessionID, {
+          parentSessionID: toolContext.sessionID,
+          startedAt,
+          status: "running",
+          blockedActions,
+        })
+        const children = childSessions.get(toolContext.sessionID) ?? new Set<string>()
+        children.add(childSessionID)
+        childSessions.set(toolContext.sessionID, children)
+      }
+      return toolContext.progress(metadata)
+    }
+    const delegatedContext = { ...toolContext, progress: inheritedProgress }
+    const nativeInput = {
+      agent: agentID,
+      description: request.description,
+      prompt: request.prompt,
+      ...(request.model ? { model: request.model } : {}),
+      ...(request.sessionID ? { sessionID: request.sessionID } : {}),
+      ...(request.background ? { background: true } : {}),
+    }
+    const result = await native.execute(nativeInput, delegatedContext)
+    return result
+  }
+
+  addV2LookAtTool(editor, config, nativeRead, (request, context) =>
+    withDelegationAlias(invocations, "task", context, () => launch(request, context)),
+  )
+
+  if (!toolDisabled(config, "task")) {
+    addV2Tool(editor, {
+      name: "task",
+      description: "Delegate a task to an OMO subagent. Provide exactly one of category or subagent_type. Use background mode for independent work; the result includes the native child sessionID.",
+      input: taskInput,
+      output: native.output,
+      options: { codemode: false, permission: "task" },
+      execute: async (args, context) => {
+        if (args.category && args.subagent_type) throw new ToolError({ message: "Pass either category or subagent_type, not both." })
+        if (!args.category && !args.subagent_type) throw new ToolError({ message: "Pass a category or subagent_type." })
+        const runInBackground = args.run_in_background === true
+        let agent = args.subagent_type ?? "sisyphus-junior"
+        let model: string | undefined
+        let categoryAppend: string | undefined
+        let blockedActions: string[] = []
+        if (args.category) {
+          const categoryName = args.category
+          const categoryConfig = config.categories?.[categoryName] ?? DEFAULT_CATEGORIES[categoryName]
+          if (!categoryConfig || categoryConfig.disable) {
+            const names = Object.entries({ ...DEFAULT_CATEGORIES, ...config.categories }).filter(([, value]) => !value.disable).map(([name]) => name).join(", ")
+            throw new ToolError({ message: `Unknown or disabled category "${categoryName}". Available categories: ${names}.` })
+          }
+          agent = "sisyphus-junior"
+          model = await resolveCategoryModel(ctx, categoryName, categoryConfig, config.categories?.[categoryName])
+          const userPromptAppend = config.categories?.[categoryName]?.prompt_append
+          const modelPromptAppend = CATEGORY_PROMPT_APPEND_RESOLVERS[categoryName]?.(model)
+          categoryAppend = [
+            modelPromptAppend ?? CATEGORY_PROMPT_APPENDS[categoryName],
+            userPromptAppend ? resolvePromptAppend(userPromptAppend, ctx.location.directory) : undefined,
+          ].filter((value): value is string => Boolean(value)).join("\n\n") || undefined
+          blockedActions = toolRestrictionsToActions(categoryConfig.tools)
+        }
+        const skills = await loadNativeSkills(nativeSkill, args.load_skills ?? [], config, context)
+        const prompt = addPromptContext({
+          prompt: args.prompt,
+          category: args.category,
+          categoryAppend,
+          command: args.command,
+          skills,
+          parentAgent: context.agent,
+        })
+        return withDelegationAlias(invocations, "task", context, () => launch({
+          agent,
+          description: args.description?.trim() || args.prompt.trim().split(/\s+/).slice(0, 5).join(" "),
+          prompt,
+          model,
+          sessionID: args.task_id,
+          background: runInBackground,
+          blockedActions,
+        }, context))
+      },
+    })
+  } else {
+    // The host's native alias must not remain a bypass around OMO's disabled delegation setting.
+    editor.remove("subagent")
+  }
+
+  if (!toolDisabled(config, "call_omo_agent")) {
+    addV2Tool(editor, {
+      name: "call_omo_agent",
+      description: "Invoke only the OMO explore or librarian subagent. This tool does not select task categories or inject skills.",
+      input: callAgentInput,
+      output: native.output,
+      options: { codemode: false, permission: "call_omo_agent" },
+      execute: async (args, context) => {
+        const agent = stripInvisibleAgentCharacters(args.subagent_type).trim().toLowerCase()
+        if (agent !== "explore" && agent !== "librarian") {
+          throw new ToolError({ message: `Invalid agent type "${args.subagent_type}". Only explore and librarian are allowed.` })
+        }
+        return withDelegationAlias(invocations, "call_omo_agent", context, () => launch({
+          agent,
+          description: args.description,
+          prompt: addPromptContext({ prompt: args.prompt, parentAgent: context.agent }),
+          sessionID: args.session_id,
+          background: args.run_in_background,
+        }, context))
+      },
+    })
+  }
+
+  if (!toolDisabled(config, "skill") && nativeSkill) {
+    // Existing OMO prompts use both `skill(name=...)` and native `skill(id=...)`.
+    // Keep the alias schema but route every call through the captured host executor.
+    editor.remove("skill")
+    addV2Tool(editor, {
+      name: "skill",
+      description: "Load a native skill by id or name. The host permission policy is applied before its resources are read.",
+      input: skillAliasInput,
+      output: nativeSkill.output,
+      options: { codemode: false },
+      execute: async (args, context) => {
+        const id = args.id?.trim()
+        const name = args.name?.trim()
+        if (id && name && id.toLowerCase() !== name.toLowerCase()) {
+          throw new ToolError({ message: "Pass either id or name to skill, not two different values." })
+        }
+        const requested = id || name
+        if (!requested) throw new ToolError({ message: "Pass the skill id or name." })
+        return nativeSkill.execute({ id: requested }, context)
+      },
+    })
+  } else if (toolDisabled(config, "skill")) {
+    editor.remove("skill")
+  }
+
+  if (!toolDisabled(config, "background_output")) {
+    addV2Tool(editor, {
+      name: "background_output",
+      description: "Read output from an OMO native child session by sessionID. Use block=true to wait for the current execution; a sessionID is not a legacy bg_ task ID.",
+      input: backgroundOutputInput,
+      options: { codemode: false },
+      execute: async (args, context) => {
+        if (args.task_id.startsWith("bg_")) throw new ToolError({ message: "This native V2 integration returns child sessionIDs, not bg_ IDs. Pass the sessionID from task metadata." })
+        const child = await readOwnedChildSession(ctx, context.sessionID, args.task_id)
+        let run = await runs.get(args.task_id)
+        if (run && run.parentSessionID !== context.sessionID) throw new ToolError({ message: `Session ${args.task_id} is not owned by this parent session.` })
+        let waitTimedOut = false
+        let waitedForTerminal = false
+        if (args.block && (run?.status === undefined || run.status === "running")) {
+          const timeout = Math.min(args.timeout ?? 60000, 600000)
+          const controller = new AbortController()
+          const abortFromCall = () => controller.abort(context.signal.reason)
+          context.signal.addEventListener("abort", abortFromCall, { once: true })
+          const timer = setTimeout(() => {
+            waitTimedOut = true
+            controller.abort(new Error("background_output timeout"))
+          }, timeout)
+          try {
+            await ctx.session.wait({ sessionID: args.task_id }, { signal: controller.signal })
+            waitedForTerminal = true
+          } catch (error) {
+            if (context.signal.aborted) throw error
+            if (!waitTimedOut) throw error
+          } finally {
+            clearTimeout(timer)
+            context.signal.removeEventListener("abort", abortFromCall)
+          }
+          run = await runs.get(args.task_id)
+        }
+        const latest = await ctx.session.get({ sessionID: args.task_id })
+        let status: V2SessionStatus = run?.status !== "running"
+          ? run?.status ?? "unknown"
+          : (latest.time.idle !== undefined && latest.time.idle >= run.startedAt
+            ? terminalOutcome(latest.outcome) ?? "running"
+            : "running")
+        if (waitedForTerminal) {
+          // Session.wait resolves only after the child execution is idle. Its outcome
+          // is authoritative even when run metadata was lost across plugin reload.
+          status = terminalOutcome(latest.outcome) ?? "completed"
+          if (run) {
+            await runs.markTerminal(args.task_id, status as TerminalStatus, Date.now())
+          } else {
+            await runs.recordLaunch(args.task_id, {
+              parentSessionID: context.sessionID,
+              startedAt: latest.time.idle ?? Date.now(),
+              status: status as TerminalStatus,
+              blockedActions: [],
+            })
+          }
+        }
+        const base = `Session: ${args.task_id}\nStatus: ${status}${waitTimedOut ? `\nWait timed out after ${Math.min(args.timeout ?? 60000, 600000)}ms.` : ""}`
+        if (status === "running") return { content: `${base}\nThe current child execution has not reached a verified idle state.` }
+        if (status === "unknown") return { content: `${base}\nThe active execution could not be verified after plugin reload. Pass block=true to wait for an authoritative idle transition.` }
+        const transcript = await import("./session-history").then(({ readSessionHistory }) => readSessionHistory(ctx, args.task_id, {
+          fullSession: args.full_session,
+          includeThinking: args.include_thinking,
+          includeToolResults: args.include_tool_results,
+          messageLimit: args.message_limit,
+          sinceMessageID: args.since_message_id,
+          fromEnd: args.from_end,
+          thinkingMaxChars: args.thinking_max_chars,
+        }))
+        return { content: `${base}\n\n${transcript}`, metadata: { sessionID: args.task_id, status, parentSessionID: child.parentID } }
+      },
+    })
+  }
+
+  if (!toolDisabled(config, "background_cancel")) {
+    addV2Tool(editor, {
+      name: "background_cancel",
+      description: "Interrupt a native child subagent session by its sessionID. Set all=true to interrupt tracked running children of the current session.",
+      input: backgroundCancelInput,
+      options: { codemode: false },
+      execute: async (args, context) => {
+        const sessionIDs = args.all
+          ? await runs.children(context.sessionID)
+          : args.taskId ? [args.taskId] : []
+        if (sessionIDs.length === 0) throw new ToolError({ message: "Provide taskId or set all=true when tracked running children exist." })
+        const interrupted: string[] = []
+        for (const sessionID of sessionIDs) {
+          await readOwnedChildSession(ctx, context.sessionID, sessionID)
+          const run = await runs.get(sessionID)
+          if (run && run.parentSessionID !== context.sessionID) throw new ToolError({ message: `Session ${sessionID} is not owned by this parent session.` })
+          if (run && run.status !== "running") continue
+          await ctx.session.interrupt({ sessionID })
+          interrupted.push(sessionID)
+          await runs.markTerminal(sessionID, "interrupted", Date.now())
+        }
+        return { content: interrupted.length ? `Interrupt requested for child session(s): ${interrupted.join(", ")}` : "No tracked running child sessions were found." }
+      },
+    })
+  }
+}
+
+export type V2DelegationRuntime = {
+  readonly runs: V2SubagentRunState
+  readonly childSessions: Map<string, Set<string>>
+  readonly cleanup: () => Promise<void>
+}
+
+export async function registerV2Delegation(
+  ctx: Plugin.Context,
+  config: OhMyOpenCodeConfig,
+  runs: V2SubagentRunState,
+): Promise<V2DelegationRuntime> {
+  const childSessions = new Map<string, Set<string>>()
+  const invocations: AliasInvocations = new Map()
+  const permissionRegistration = await registerV2SubagentPermissionGuard(ctx, runs, invocations)
+  let toolRegistration: Awaited<ReturnType<Plugin.Context["tool"]["transform"]>> | undefined
+  const eventAbort = new AbortController()
+  let eventLoop: Promise<void> | undefined
+  try {
+    toolRegistration = await ctx.tool.transform((editor) => {
+      const native = editor.get("subagent")
+      if (!native) throw new Error("OpenCode V2 native subagent tool is unavailable; OMO delegation cannot be registered safely.")
+      const nativeSkill = editor.get("skill")
+      if (toolDisabled(config, "task")) editor.remove("subagent")
+      registerToolAliases({ editor, ctx, config, native, nativeSkill, runs, childSessions, invocations })
+    })
+    eventLoop = (async () => {
+      try {
+        for await (const event of ctx.event.subscribe({ signal: eventAbort.signal })) {
+          if (eventAbort.signal.aborted) break
+          try {
+            if (event.type === "session.execution.started") {
+              await runs.markStarted(event.data.sessionID, event.created)
+            } else if (event.type === "session.execution.succeeded") {
+              await runs.markTerminal(event.data.sessionID, "completed", event.created)
+            } else if (event.type === "session.execution.failed") {
+              await runs.markTerminal(event.data.sessionID, "failed", event.created)
+            } else if (event.type === "session.execution.interrupted") {
+              await runs.markTerminal(event.data.sessionID, "interrupted", event.created)
+            } else if (event.type === "session.deleted") {
+              await runs.remove(event.data.sessionID)
+            }
+          } catch (error) {
+            log("[v2 delegation] Failed to update child execution state for an event.", error)
+          }
+        }
+      } catch (error) {
+        if (!eventAbort.signal.aborted) log("[v2 delegation] Execution event stream stopped unexpectedly.", error)
+      }
+    })()
+  } catch (error) {
+    eventAbort.abort()
+    await permissionRegistration.dispose()
+    await toolRegistration?.dispose()
+    throw error
+  }
+
+  return {
+    runs,
+    childSessions,
+    cleanup: async () => {
+      eventAbort.abort()
+      await toolRegistration?.dispose()
+      await permissionRegistration.dispose()
+      await eventLoop?.catch(() => undefined)
+    },
+  }
+}

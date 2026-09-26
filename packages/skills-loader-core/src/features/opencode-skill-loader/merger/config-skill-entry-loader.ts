@@ -111,6 +111,7 @@ $ARGUMENTS
     scope: "config",
     license: entry.license || fileMetadata.license,
     compatibility: entry.compatibility || fileMetadata.compatibility,
+    disableModelInvocation: fileMetadata["disable-model-invocation"] === true,
     metadata: (entry.metadata as Record<string, string> | undefined) || fileMetadata.metadata,
     allowedTools,
   }

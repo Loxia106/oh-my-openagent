@@ -34,6 +34,11 @@ describe("configEntryToLoadedSkill", () => {
       "utf8"
     )
     writeFileSync(
+      join(configDir, "disabled-skill.md"),
+      ["---", "description: Do not show for automatic matching", "disable-model-invocation: true", "---", "Use explicitly."].join("\n"),
+      "utf8"
+    )
+    writeFileSync(
       outsideSkillPath,
       [
         "---",
@@ -74,6 +79,11 @@ describe("configEntryToLoadedSkill", () => {
 
     //#then
     expect(loaded?.allowedTools).toEqual(["Read", "Write", "Bash"])
+  })
+
+  test("preserves a from-file Claude invocation gate", () => {
+    const loaded = configEntryToLoadedSkill("disabled-skill", { from: "./disabled-skill.md" }, configDir)
+    expect(loaded?.disableModelInvocation).toBe(true)
   })
 
   test("rejects absolute skill files outside configDir", () => {

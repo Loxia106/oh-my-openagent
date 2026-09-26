@@ -61,6 +61,20 @@ Path skill.
       expect(skill?.scope).toBe("opencode-project")
     })
 
+    it("preserves disable-model-invocation on the async discovery path", async () => {
+      const skillDir = createTestSkill("hidden-skill", `---
+name: hidden-skill
+description: Not shown for automatic matching
+disable-model-invocation: true
+---
+Body
+`)
+      const { loadSkillFromPathAsync } = await import("./async-loader")
+      const skill = await loadSkillFromPathAsync(join(skillDir, "SKILL.md"), skillDir, "hidden-skill", "project")
+
+      expect(skill?.disableModelInvocation).toBe(true)
+    })
+
     it("returns null for invalid path", async () => {
       // given
       const invalidPath = join(TEST_DIR, "nonexistent.md")

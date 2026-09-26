@@ -1,9 +1,16 @@
 import type { PluginModule } from "@opencode-ai/plugin"
+import type { Plugin } from "@opencode/plugin"
 import { createPluginModule } from "./testing/create-plugin-module"
+import { setupV2 } from "./v2/setup"
 
-const pluginModule: PluginModule = createPluginModule()
+const legacyModule = createPluginModule()
+const pluginModule: PluginModule & Plugin.Plugin = {
+  ...legacyModule,
+  id: "oh-my-openagent",
+  setup: setupV2,
+}
 
-export const omoPlugin = pluginModule.server
+export const omoPlugin = legacyModule.server
 
 export default pluginModule
 

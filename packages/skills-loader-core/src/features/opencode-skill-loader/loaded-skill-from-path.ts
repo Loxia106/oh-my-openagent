@@ -58,6 +58,7 @@ export async function loadSkillFromPath(options: {
       scope: options.scope,
       license: data.license,
       compatibility: data.compatibility,
+      disableModelInvocation: data["disable-model-invocation"] === true,
       metadata: data.metadata,
       allowedTools: parseAllowedTools(data["allowed-tools"]),
       mcpConfig,

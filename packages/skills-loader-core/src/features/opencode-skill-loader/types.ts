@@ -6,6 +6,7 @@ export type SkillScope = "builtin" | "config" | "user" | "project" | "opencode" 
 export interface SkillMetadata {
   name?: string
   description?: string
+  "disable-model-invocation"?: boolean
   model?: string
   "argument-hint"?: string
   agent?: string
@@ -31,6 +32,7 @@ export interface LoadedSkill {
   scope: SkillScope
   license?: string
   compatibility?: string
+  disableModelInvocation?: boolean
   metadata?: Record<string, string>
   allowedTools?: string[]
   mcpConfig?: SkillMcpConfig
