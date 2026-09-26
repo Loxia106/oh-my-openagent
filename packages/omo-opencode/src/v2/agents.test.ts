@@ -39,6 +39,44 @@ function availableSkillsSection(prompt: string): string {
   return prompt.slice(start, end < 0 ? undefined : end)
 }
 
+async function registerAgents(
+  config: OhMyOpenCodeConfig,
+  agents = new Map<string, any>(),
+): Promise<Map<string, any>> {
+  let applyTransform: ((editor: AgentEditor) => void) | undefined
+  const ctx = {
+    location: { directory: process.cwd() },
+    agent: {
+      transform: async (callback: (editor: AgentEditor) => void) => {
+        applyTransform = callback
+        return { dispose: async () => undefined }
+      },
+    },
+  } as unknown as Plugin.Context
+  const cleanup = await registerV2Agents(ctx, config, [], new V2ModelCatalog())
+  const editor = {
+    list: () => Array.from(agents.values()),
+    get: (id: string) => agents.get(id),
+    default: () => undefined,
+    remove: (id: string) => { agents.delete(id) },
+    update: (id: string, update: (agent: any) => void) => {
+      const agent = agents.get(id) ?? {
+        id,
+        name: id,
+        request: { settings: {}, headers: {}, body: {} },
+        permissions: [],
+        mode: "primary",
+        hidden: false,
+      }
+      update(agent)
+      agents.set(id, agent)
+    },
+  } as unknown as AgentEditor
+  applyTransform!(editor)
+  await cleanup()
+  return agents
+}
+
 describe("native v2 agents", () => {
   test("registers the complete built-in set, including Prometheus, without choosing unavailable models", () => {
     const configs = buildV2AgentConfigs({
@@ -197,5 +235,79 @@ describe("native v2 agents", () => {
     await registerV2Agents(ctx, invalidDefault, [], catalog)
     transform!(makeEditor())
     expect(defaultCalls).toEqual(["atlas"])
+  })
+
+  test("bridges flat provider options with explicit OMO precedence and leaves host request body intact", async () => {
+    const providerOptions = {
+      temperature: 1.8,
+      topP: 0.99,
+      reasoningEffort: "max",
+      thinking: { type: "disabled" },
+      customOption: { source: "providerOptions" },
+    }
+    const sourceOptions = {
+      temperature: 0.73,
+      customOption: { source: "options" },
+      optionsOnly: "last",
+    }
+    const originalProviderOptions = structuredClone(providerOptions)
+    const originalSourceOptions = structuredClone(sourceOptions)
+    const oracle = {
+      id: "oracle",
+      name: "Oracle",
+      request: {
+        settings: { hostSetting: "preserved" },
+        headers: { "x-host-header": "preserved" },
+        body: { hostBody: { preserved: true } },
+      },
+      permissions: [],
+      mode: "subagent",
+      hidden: false,
+    }
+
+    const registered = await registerAgents({
+      agents: {
+        oracle: {
+          temperature: 0.23,
+          top_p: 0.61,
+          maxTokens: 317,
+          reasoningEffort: "low",
+          textVerbosity: "low",
+          thinking: { type: "enabled", budgetTokens: 400 },
+          providerOptions,
+          options: sourceOptions,
+        },
+      },
+    } as unknown as OhMyOpenCodeConfig, new Map([["oracle", oracle]]))
+
+    expect(registered.get("oracle")?.request.settings).toMatchObject({
+      hostSetting: "preserved",
+      temperature: 0.73,
+      topP: 0.61,
+      maxTokens: 317,
+      reasoningEffort: "low",
+      textVerbosity: "low",
+      thinking: { type: "enabled", budgetTokens: 400 },
+      customOption: { source: "options" },
+      optionsOnly: "last",
+    })
+    expect(registered.get("oracle")?.request.body).toEqual({ hostBody: { preserved: true } })
+    expect(registered.get("oracle")?.request.headers).toEqual({ "x-host-header": "preserved" })
+    expect(providerOptions).toEqual(originalProviderOptions)
+    expect(sourceOptions).toEqual(originalSourceOptions)
+  })
+
+  test("ignores array providerOptions and options instead of exposing numeric keys", async () => {
+    const registered = await registerAgents({
+      agents: {
+        oracle: {
+          providerOptions: ["invalid-provider-options"],
+          options: ["invalid-agent-options"],
+        },
+      },
+    } as unknown as OhMyOpenCodeConfig)
+
+    expect(registered.get("oracle")?.request.settings).not.toHaveProperty("0")
+    expect(registered.get("oracle")?.request.body).toEqual({})
   })
 })

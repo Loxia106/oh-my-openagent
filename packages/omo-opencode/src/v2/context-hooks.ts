@@ -4,7 +4,6 @@ import type { OhMyOpenCodeConfig } from "../config"
 import type { KeywordType } from "../config/schema/keyword-detector"
 import { detectKeywordsWithType } from "../hooks/keyword-detector/detector"
 import {
-	isNonOmoAgent,
 	isPlannerAgent,
 	getUltraworkMessage,
 	TEAM_MESSAGE,
@@ -15,6 +14,7 @@ import { log } from "../shared/logger"
 const SESSION_STATE_LIMIT = 256
 const STOP_CONTINUATION_COMMAND = /^\s*\/stop-continuation(?:\s|$)/i
 const SLASH_COMMAND = /^\s*\/[a-zA-Z][\w-]*(?:\s|$)/
+const NATIVE_AGENTS_WITHOUT_OMO_KEYWORD_MODES = new Set(["build", "plan"])
 const HYPERPLAN_UNAVAILABLE_MESSAGE = `<native-mode-compatibility>
 The requested Hyperplan adversarial team workflow is unavailable in this OpenCode 2 runtime because the OMO team manager is not available here. Do not load Hyperplan team instructions. Do not simulate team rounds or claim that team orchestration ran. Explain this limitation and offer supported alternatives; do not choose a substitute workflow without the user's direction.
 If Ultrawork was also explicitly requested, continue its independent protocol while making clear that the Hyperplan team portion is unavailable.
@@ -146,7 +146,6 @@ export async function registerV2ContextHooks(ctx: Plugin.Context, config: OhMyOp
 		contextRegistration = await ctx.session.hook("context", async (input: SessionContext) => {
 		applyDisabledTools(input, config)
 		const agent = String(input.agent)
-		if (isNonOmoAgent(agent)) return
 		try {
 			const result = await ctx.agent.get({ agentID: agent })
 			const settings = result.data.request?.settings
@@ -157,6 +156,10 @@ export async function registerV2ContextHooks(ctx: Plugin.Context, config: OhMyOp
 				log(`[v2 context] Could not apply native request settings for ${agent}: ${error instanceof Error ? error.message : String(error)}`)
 			}
 		}
+		// Request settings belong to the selected native agent, including host
+		// agents and OMO custom agents with names like `api-builder`. Keep only
+		// keyword-mode routing scoped to OpenCode's exact built-in IDs.
+		if (NATIVE_AGENTS_WITHOUT_OMO_KEYWORD_MODES.has(agent.toLowerCase())) return
 		if (isPlannerAgent(agent)) return
 		const model = String(input.model.id)
 		const text = latestUserText(input.messages) ?? modes.get(input.sessionID)?.lastPrompt

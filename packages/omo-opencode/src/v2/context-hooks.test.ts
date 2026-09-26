@@ -14,9 +14,15 @@ afterEach(async () => {
 	await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
 })
 
-function mockContext(directory: string, failContextHook = false, toolNames: string[] = []) {
+function mockContext(
+	directory: string,
+	failContextHook = false,
+	toolNames: string[] = [],
+	requests: Record<string, { settings?: Record<string, unknown>; body?: Record<string, unknown> }> = {},
+) {
 	const callbacks = new Map<string, (input: any) => unknown>()
 	const disposed: string[] = []
+	const agentGets: string[] = []
 	const ctx = {
 		location: { directory },
 		storage: { get: async () => undefined, set: async () => undefined, remove: async () => undefined },
@@ -35,11 +41,14 @@ function mockContext(directory: string, failContextHook = false, toolNames: stri
 		toolRegistry: { register: async () => ({ dispose: async () => undefined }) },
 		event: { subscribe: async function* () { await new Promise<void>((resolve) => setTimeout(resolve, 1)) } },
 		agent: {
-			get: async () => ({ data: { request: { settings: { temperature: 0.23, topP: 0.61, maxTokens: 317 } } } }),
+			get: async ({ agentID }: { agentID: string }) => {
+				agentGets.push(agentID)
+				return { data: { request: requests[agentID] ?? { settings: { temperature: 0.23, topP: 0.61, maxTokens: 317 } } } }
+			},
 			transform: async () => ({ dispose: async () => undefined }),
 		},
 	}
-	return { ctx: ctx as unknown as Plugin.Context, callbacks, disposed }
+	return { ctx: ctx as unknown as Plugin.Context, callbacks, disposed, agentGets }
 }
 
 function contextInput(sessionID = "ses-context-test"): SessionContext {
@@ -150,6 +159,53 @@ describe("native v2 context hooks", () => {
 		const input = contextInput()
 		await callbacks.get("context")?.(input)
 		expect(input.options).toMatchObject({ temperature: 0.23, topP: 0.61, maxTokens: 317 })
+		await cleanup()
+	})
+
+	test("applies request settings to a custom api-builder and retains its OMO mode behavior", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "omo-v2-context-test-"))
+		roots.push(directory)
+		const { ctx, callbacks, agentGets } = mockContext(directory, false, [], {
+			"api-builder": { settings: { temperature: 0.42, reasoningEffort: "high" } },
+		})
+		const cleanup = await registerV2ContextHooks(ctx, {
+			default_mode: { ultrawork: true },
+		} as unknown as OhMyOpenCodeConfig)
+
+		const input = contextInput()
+		input.agent = "api-builder" as never
+		await callbacks.get("context")?.(input)
+
+		expect(agentGets).toContain("api-builder")
+		expect(input.options).toMatchObject({ temperature: 0.42, reasoningEffort: "high" })
+		expect(input.system.map((part) => part.text)).toContain(getUltraworkMessage("api-builder", "openai/mock"))
+		await cleanup()
+	})
+
+	test("applies host build and plan settings but excludes their exact IDs from OMO keyword modes", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "omo-v2-context-test-"))
+		roots.push(directory)
+		const { ctx, callbacks, agentGets } = mockContext(directory, false, [], {
+			build: { settings: { temperature: 0.31, reasoningEffort: "medium" } },
+			plan: { settings: { topP: 0.77 } },
+		})
+		const cleanup = await registerV2ContextHooks(ctx, {
+			default_mode: { ultrawork: true },
+		} as unknown as OhMyOpenCodeConfig)
+
+		const build = contextInput("ses-native-build")
+		build.agent = "build" as never
+		await callbacks.get("context")?.(build)
+		expect(agentGets).toContain("build")
+		expect(build.options).toMatchObject({ temperature: 0.31, reasoningEffort: "medium" })
+		expect(build.system.map((part) => part.text)).toEqual(["base system"])
+
+		const plan = contextInput("ses-native-plan")
+		plan.agent = "plan" as never
+		await callbacks.get("context")?.(plan)
+		expect(agentGets).toContain("plan")
+		expect(plan.options).toMatchObject({ topP: 0.77 })
+		expect(plan.system.map((part) => part.text)).toEqual(["base system"])
 		await cleanup()
 	})
 
