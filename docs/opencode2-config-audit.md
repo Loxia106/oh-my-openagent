@@ -4,6 +4,8 @@ This is the recorded baseline audit, not a claim that every setting was function
 
 **Baseline:** `58ba6a150ed314fbeb2d53db52ab5304fc8baa5c` (`2026-09-27`). This is a source audit of the checked-in baseline, not the later safety/task fixes. All paths/lines below refer to that baseline. Unless prefixed `packages/`, paths are relative to `packages/omo-opencode/`. `setupV2` is the default plugin setup; it loads the validated config and installs only the native registry, tool, hook, and command adapters (`packages/omo-opencode/src/index.ts:6-15`, `src/v2/setup.ts:21-34`, `src/v2/config.ts:9-26`).
 
+Later source changes: `1a78d25c5` adds background concurrency/depth/descendant admission and resume-generation protection; monitoring, timers, and circuit breakers remain separate gaps. `2730bca4e` adds eligible Claude user/project/plugin commands, with explicit evaluator limitations. The current compatibility document records their scope and verification; the baseline rows below are retained as audit history.
+
 **Status key:** Applied = an observed native consumer; Partial = only some fields/paths or semantics are preserved; Not applied = no consumer in the default V2 setup graph (may still work through the legacy server/CLI); CLI/migration = only that path is evidenced. Optional schema fields are unset unless the cited nested schema declares a default.
 
 ## Highest-impact gaps
@@ -68,6 +70,12 @@ This is the recorded baseline audit, not a claim that every setting was function
 | `_migrations` | Migration metadata | Passed through common V2 config validation; startup migration is run once per directory before validation (`v2/config.ts:9-26`). Not a runtime feature switch. |
 
 The [background policy source audit](opencode2-background-policy-audit.md) expands the actual defaults and route-specific behavior of `background_task`; several schema comments differ from the effective V1 constants. Its proposed implementation is not a completed-feature claim.
+
+The [fallback source audit](opencode2-fallback-audit.md) checks both legacy fallback consumers against the official 2.0.18 retry, transport, and session APIs. Primary and compaction retries can have identical public identifying fields; title generation does not use that retry policy. No faithful generic fallback port has been established through those APIs. This is a source-level limitation, not a runtime reproduction or an assertion that all narrower fallback designs are impossible.
+
+### Goal auto-start source clarification
+
+A follow-up audit of upstream 5.0.0 found that `goal.auto_start` is passed as `autoStart` to `createGoalHook`, but that hook does not read it (`src/plugin/hooks/create-session-hooks.ts:168`, `src/hooks/goal/index.ts`). It is therefore an accepted but unused setting in that upstream path, not an established V2 regression. `default_mode.goal` does have a separate chat-message consumer, but its behavior differs from its documentation: `handleGoalMessage` first passes every eligible message to `parseGoalCommand`, whose nonempty default case is `setObjective`. The later first-message/default-mode branch requires `show`, which that parser returns only for empty input; its nonempty-objective condition cannot then succeed (`src/plugin/chat-message/loop-commands.ts:25-65`, `src/hooks/goal/command-arguments.ts:9-28`). The existing positive auto-start test does not test the disabled or subsequent-message cases. This is a source finding, not an OpenCode 1 runtime reproduction. The native adapter continues to require an explicit goal command/tool and does not copy the upstream behavior of replacing a goal from ordinary messages.
 
 ## Follow-up order suggested by source evidence
 

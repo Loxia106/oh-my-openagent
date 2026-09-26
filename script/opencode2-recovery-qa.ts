@@ -2,12 +2,13 @@ import { existsSync } from "node:fs"
 import { Database } from "bun:sqlite"
 import { OpenCode } from "@opencode/client"
 import { mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from "node:fs/promises"
-import { join, resolve } from "node:path"
+import { isAbsolute, join, resolve } from "node:path"
 import { tmpdir } from "node:os"
 
 const ROOT = resolve(import.meta.dir, "..")
 const PLUGIN_DIR = resolve(process.env.OPENCODE2_PLUGIN_DIR ?? join(ROOT, "dist", "opencode2"))
 const OPENCODE_BIN = process.env.OPENCODE2_CLI ? resolve(process.env.OPENCODE2_CLI) : ""
+const EXPECTED_SERVER_SHA256 = process.env.OPENCODE2_EXPECTED_SERVER_SHA256 ?? ""
 const EXPECTED_MODEL = "omoqa/qa-model"
 const EXPECTED_PROVIDER = "omoqa"
 const EXPECTED_MODEL_ID = "qa-model"
@@ -264,8 +265,11 @@ function fixturePluginSource(): string {
 }
 
 async function main(): Promise<void> {
-  if (!OPENCODE_BIN || !existsSync(OPENCODE_BIN)) throw new Error("Set OPENCODE2_CLI to the pinned OpenCode 2.0.18 binary.")
+  if (!OPENCODE_BIN || !isAbsolute(process.env.OPENCODE2_CLI ?? "") || !existsSync(OPENCODE_BIN)) throw new Error("Set OPENCODE2_CLI to the absolute path of the pinned OpenCode 2.0.18 binary.")
   if (!existsSync(join(PLUGIN_DIR, "server.js"))) throw new Error("Native bundle missing at " + PLUGIN_DIR)
+  if (!/^[a-f0-9]{64}$/i.test(EXPECTED_SERVER_SHA256) || await fileHash(join(PLUGIN_DIR, "server.js")) !== EXPECTED_SERVER_SHA256.toLowerCase()) {
+    throw new Error("Set OPENCODE2_EXPECTED_SERVER_SHA256 to the reviewed native server bundle hash.")
+  }
   const versionResult = Bun.spawnSync([OPENCODE_BIN, "--version"], { stdout: "pipe", stderr: "pipe" })
   const version = new TextDecoder().decode(versionResult.stdout).trim()
   if (!version.includes("2.0.18")) throw new Error("Expected OpenCode 2.0.18, got " + version)
@@ -471,7 +475,7 @@ async function main(): Promise<void> {
       disabled_mcps: ["websearch", "context7", "grep_app", "lsp"],
       disabled_providers: [],
       runtime_fallback: { enabled: false },
-      claude_code: { mcp: false },
+      claude_code: { mcp: false, agents: false, skills: false, commands: false, plugins: false, hooks: false },
       telemetry: false,
       auto_update: false,
     },
@@ -524,8 +528,17 @@ async function main(): Promise<void> {
     const initialCatalog = await assertCatalog(client, preflights, "server-ready")
     checks.catalogIsExactlyLocal = initialCatalog.length === 1 && initialCatalog[0] === EXPECTED_MODEL
     if (!checks.catalogIsExactlyLocal) throw new Error("Model catalog preflight failed; no session prompt was sent.")
+    const modelDefault = await client.model.default()
+    const selectedDefault = modelRef(modelDefault.data)
+    preflights.push({ phase: "server-ready-default", selectedModel: selectedDefault })
+    checks.defaultModelIsLocal = selectedDefault === EXPECTED_MODEL
+    if (!checks.defaultModelIsLocal) throw new Error("Default model preflight failed; no session prompt was sent.")
+    const mcpRegistry = await client.mcp.list()
+    preflights.push({ phase: "server-ready-mcp", activeMcpNames: mcpRegistry.data.map((item) => item.name) })
+    checks.mcpRegistryIsEmpty = mcpRegistry.data.length === 0
+    if (!checks.mcpRegistryIsEmpty) throw new Error("MCP registry preflight failed; no session prompt was sent.")
 
-    sessionIDs.edit = await createPinnedSession(client, "recovery edit error", preflights)
+    sessionIDs.edit = await createPinnedSession(client, "recovery edit error", preflights, canonicalProject)
     await promptSession(client, sessionIDs.edit, EDIT_PROMPT + ": cause an unmatched native edit, then inspect its error.", preflights)
     const editMessages = (await client.message.list({ sessionID: sessionIDs.edit })).data
     const editTool = findToolState(editMessages, "edit")
@@ -540,7 +553,7 @@ async function main(): Promise<void> {
       assertionFailures.push("native edit failure/guidance assertions")
     }
 
-    sessionIDs.subagent = await createPinnedSession(client, "recovery no-text subagent", preflights)
+    sessionIDs.subagent = await createPinnedSession(client, "recovery no-text subagent", preflights, canonicalProject)
     // The provider request body is model context, not a reliable source of host session identity.
     // Bind the driver-created parent session before the native tool creates its actual child.
     subagentParentID = sessionIDs.subagent
@@ -566,7 +579,7 @@ async function main(): Promise<void> {
       assertionFailures.push("native no-text subagent assertions")
     }
 
-    sessionIDs.json = await createPinnedSession(client, "recovery JSON Tool.Error", preflights)
+    sessionIDs.json = await createPinnedSession(client, "recovery JSON Tool.Error", preflights, canonicalProject)
     await promptSession(client, sessionIDs.json, JSON_PROMPT + ": invoke the QA-only Tool.Error fixture.", preflights)
     const jsonMessages = (await client.message.list({ sessionID: sessionIDs.json })).data
     const jsonTool = findToolState(jsonMessages, "recovery_json_failure")
@@ -583,7 +596,7 @@ async function main(): Promise<void> {
       assertionFailures.push("QA-only native Tool.Error assertions")
     }
 
-    sessionIDs.notepadGuard = await createPinnedSession(client, "recovery notepad write guard", preflights)
+    sessionIDs.notepadGuard = await createPinnedSession(client, "recovery notepad write guard", preflights, canonicalProject)
     await promptSession(client, sessionIDs.notepadGuard, WRITE_PROMPT + ": attempt a destructive Write to the append-only notepad and inspect the rejection.", preflights)
     const notepadMessages = (await client.message.list({ sessionID: sessionIDs.notepadGuard })).data
     const writeTool = findToolState(notepadMessages, "write")
@@ -616,6 +629,7 @@ async function main(): Promise<void> {
       sourceRoot: ROOT,
       pluginDirectory: PLUGIN_DIR,
       pluginServerSha256: await fileHash(join(PLUGIN_DIR, "server.js")),
+      expectedServerSha256: EXPECTED_SERVER_SHA256,
       tuiBundleSha256: await fileHash(join(PLUGIN_DIR, "tui.js")),
       canonicalTempRoot: tempRoot,
       canonicalProject,
@@ -679,9 +693,12 @@ async function createPinnedSession(
   client: ReturnType<typeof OpenCode.make>,
   title: string,
   preflights: Array<Record<string, unknown>>,
+  directory: string,
 ): Promise<string> {
   await assertCatalog(client, preflights, title + "-before-create")
-  const session = await client.session.create({ title })
+  const session = await client.session.create({ title, location: { directory } })
+  preflights.push({ phase: title + "-created-location", sessionID: session.id, directory: session.location.directory })
+  if (await realpath(String(session.location.directory)) !== directory) throw new Error("Session was created outside the isolated QA project")
   await client.session.switchAgent({ sessionID: session.id, agent: "sisyphus" })
   await client.session.switchModel({ sessionID: session.id, model: { providerID: EXPECTED_PROVIDER, id: EXPECTED_MODEL_ID } })
   await assertSessionModel(client, session.id, preflights, title + "-before-prompt")
