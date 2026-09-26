@@ -28,7 +28,8 @@ import { isTaskSystemEnabled } from "../shared"
 import { mergeCategories } from "../shared/merge-categories"
 import { CATEGORY_DESCRIPTIONS } from "../tools/delegate-task/constants"
 import { log } from "../shared/logger"
-import { resolveV2AgentModel, toV2ModelRef, type V2ModelCatalog, type V2ModelCatalogSnapshot } from "./model-resolution"
+import { isProviderDisabled } from "../shared/disabled-providers"
+import { resolveV2AgentModel, toV2ModelRef, type V2ConfiguredModel, type V2ModelCatalog, type V2ModelCatalogSnapshot } from "./model-resolution"
 import { loadV2CustomAgentConfigs } from "./custom-agents"
 
 const BUILTIN_AGENT_NAMES = [
@@ -229,6 +230,93 @@ function disablesModelInvocation(skill: Pick<LoadedSkill, "disableModelInvocatio
     (typeof autoinvoke === "string" && autoinvoke.trim().toLowerCase() === "false")
 }
 
+function modelEntry(value: unknown): V2ConfiguredModel | undefined {
+  if (typeof value === "string") return value
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+  const entry = value as Record<string, unknown>
+  if (typeof entry.model !== "string") return undefined
+  return {
+    model: entry.model,
+    ...(typeof entry.variant === "string" ? { variant: entry.variant } : {}),
+  }
+}
+
+function modelEntries(value: unknown): V2ConfiguredModel[] {
+  if (typeof value === "string") return [value]
+  if (!Array.isArray(value)) return []
+  return value.map(modelEntry).filter((entry): entry is V2ConfiguredModel => entry !== undefined)
+}
+
+function agentModelChain(override: AgentOverrideConfig | undefined): {
+  primary?: V2ConfiguredModel
+  fallbacks: V2ConfiguredModel[]
+} {
+  const raw = (override ?? {}) as Record<string, unknown>
+  const models = modelEntries(raw.models)
+  if (models.length > 0) return { primary: models[0], fallbacks: models.slice(1) }
+  return {
+    primary: modelEntry(raw.model),
+    fallbacks: modelEntries(raw.fallback_models),
+  }
+}
+
+function categoryModelChain(value: unknown): {
+  primary?: V2ConfiguredModel
+  fallbacks: V2ConfiguredModel[]
+} {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { fallbacks: [] }
+  const category = value as Record<string, unknown>
+  const models = modelEntries(category.models)
+  if (models.length > 0) return { primary: models[0], fallbacks: models.slice(1) }
+  const model = modelEntry(category.model)
+  const fallbacks = modelEntries(category.fallback_models)
+  if (model) return { primary: model, fallbacks }
+  return { primary: fallbacks[0], fallbacks: fallbacks.slice(1) }
+}
+
+function customAgentConfigsWithModelPolicy(
+  customAgents: Record<string, AgentConfig>,
+  config: OhMyOpenCodeConfig,
+  catalog: V2ModelCatalogSnapshot,
+  onBlocked: (name: string, diagnostic: string) => void,
+): Record<string, AgentConfig> {
+  const mergedCategories = mergeCategories(config.categories)
+  const result: Record<string, AgentConfig> = {}
+  for (const [name, customConfig] of Object.entries(customAgents)) {
+    const override = getOverride(config, name)
+    const direct = agentModelChain(override)
+    const category = override?.category ? categoryModelChain(mergedCategories[override.category]) : { fallbacks: [] as V2ConfiguredModel[] }
+    const useCategory = !direct.primary && Boolean(override?.category && category.primary)
+    const rawCustomConfig = customConfig as AgentConfig & Record<string, unknown>
+    const model = direct.primary ?? (useCategory ? undefined : modelEntry(rawCustomConfig.model))
+    const fallbacks = direct.primary
+      ? direct.fallbacks
+      : useCategory
+        ? []
+        : modelEntries(rawCustomConfig.fallback_models)
+    const resolution = resolveV2AgentModel({
+      agent: name,
+      configuredModel: model,
+      configuredFallbacks: fallbacks,
+      categoryModel: useCategory ? category.primary : undefined,
+      categoryFallbacks: useCategory ? category.fallbacks : [],
+      primary: customConfig.mode === "primary" || customConfig.mode === "all",
+      disabledProviders: config.disabled_providers,
+      snapshot: catalog,
+    })
+    if (resolution.diagnostic) log(`[v2 agent] ${resolution.diagnostic}`)
+    if (resolution.blocked) {
+      onBlocked(name, resolution.diagnostic ?? `Agent "${name}" has no allowed model.`)
+      continue
+    }
+    const next = { ...customConfig }
+    if (resolution.model) next.model = resolution.model
+    if (resolution.variant) next.variant = resolution.variant
+    result[name] = next
+  }
+  return result
+}
+
 /**
  * Agent prompts are also used by the legacy skill picker, so keep its shared
  * behavior unchanged and apply native OpenCode's invocation policy here.
@@ -251,8 +339,9 @@ function catalogPrompts(input: {
   catalog: V2ModelCatalogSnapshot
   loadedSkills: readonly LoadedSkill[]
   directory: string
+  onBlocked?: (name: string, diagnostic: string) => void
 }): Record<string, AgentConfig> {
-  const { config, catalog, loadedSkills, directory } = input
+  const { config, catalog, loadedSkills, directory, onBlocked } = input
   const mergedCategories = mergeCategories(config.categories)
   const availableCategories: AvailableCategory[] = Object.entries(mergedCategories).map(([name, category]) => ({
     name,
@@ -270,22 +359,28 @@ function catalogPrompts(input: {
   const promptModels = new Map<string, string>()
   for (const name of BUILTIN_AGENT_NAMES) {
     const override = getOverride(config, name)
-    const categoryModel = override?.category ? mergedCategories[override.category]?.model : undefined
+    const configured = agentModelChain(override)
+    const category = override?.category ? categoryModelChain(mergedCategories[override.category]) : { fallbacks: [] as V2ConfiguredModel[] }
     const resolution = resolveV2AgentModel({
       agent: name,
-      configuredModel: override?.model,
-      categoryModel,
+      configuredModel: configured.primary,
+      configuredFallbacks: configured.fallbacks,
+      categoryModel: configured.primary ? undefined : category.primary,
+      categoryFallbacks: configured.primary ? [] : category.fallbacks,
       primary: PRIMARY_AGENTS.has(name),
+      disabledProviders: config.disabled_providers,
       snapshot: catalog,
     })
     resolutions.set(name, resolution)
     if (resolution.diagnostic) log(`[v2 agent] ${resolution.diagnostic}`)
+    if (resolution.blocked) onBlocked?.(name, resolution.diagnostic ?? `Agent "${name}" has no allowed model.`)
     promptModels.set(name, resolution.model ?? promptFallbackModel(name) ?? "anthropic/claude-opus-5-5")
   }
 
   const preliminary = new Map<string, AgentConfig>()
   for (const name of BUILTIN_AGENT_NAMES) {
     if (isDisabled(config, name)) continue
+    if (resolutions.get(name)?.blocked) continue
     const model = promptModels.get(name)!
     if (name === "hephaestus" && !isHephaestusSupportedModel(model)) {
       log(`[v2 agent] Hephaestus is not registered because its prompt model "${model}" is unsupported.`)
@@ -340,6 +435,8 @@ function catalogPrompts(input: {
   const result: Record<string, AgentConfig> = {}
   for (const name of BUILTIN_AGENT_NAMES) {
     if (isDisabled(config, name)) continue
+    const resolution = resolutions.get(name)
+    if (resolution?.blocked) continue
     const override = getOverride(config, name)
     const model = promptModels.get(name)!
     if (name === "hephaestus" && !isHephaestusSupportedModel(model)) {
@@ -386,7 +483,6 @@ function catalogPrompts(input: {
       teamModeEnabled: config.team_mode?.enabled,
     })
 
-    const resolution = resolutions.get(name)
     if (name === "hephaestus") {
       const resolvedModel = typeof built.model === "string" ? built.model : resolution?.model
       if (resolvedModel && !isHephaestusSupportedModel(resolvedModel)) {
@@ -446,6 +542,7 @@ export function buildV2AgentConfigs(input: {
   catalog: V2ModelCatalogSnapshot
   loadedSkills: readonly LoadedSkill[]
   directory: string
+  onBlocked?: (name: string, diagnostic: string) => void
 }): Record<string, AgentConfig> {
   return catalogPrompts(input)
 }
@@ -458,61 +555,124 @@ export async function registerV2Agents(
 ): Promise<() => Promise<void>> {
   let defaultDiagnosticLogged = false
   const reportedPermissionConflicts = new Set<string>()
+  const ownedAgentIDs = new Set<string>()
+  const blockedModels = new Map<string, string>()
+  const disabledProviders = config.disabled_providers ?? []
+  let active = true
+  let disposeModelGuard: (() => Promise<void>) | undefined
+  let disposeAgents: (() => Promise<void>) | undefined
   const customAgents = loadV2CustomAgentConfigs(config, String(ctx.location.directory))
-  const registration = await ctx.agent.transform((editor) => {
-    const configs = {
-      ...buildV2AgentConfigs({
-      config,
-      catalog: catalog.snapshot,
-      loadedSkills,
-      directory: String(ctx.location.directory),
-      }),
-      ...customAgents,
+  try {
+    if (disabledProviders.length > 0) {
+      const modelGuard = await ctx.session.hook("model.request", (input) => {
+        if (!active) return
+        const agent = String(input.agent)
+        if (!ownedAgentIDs.has(agent)) return
+        const configuredBlock = blockedModels.get(agent)
+        if (configuredBlock) throw new Error(configuredBlock)
+        const providerID = String(input.model.providerID)
+        if (isProviderDisabled(`${providerID}/${String(input.model.id)}`, disabledProviders)) {
+          throw new Error(`OMO agent "${agent}" model request is blocked because provider "${providerID}" is listed in disabled_providers.`)
+        }
+      })
+      disposeModelGuard = () => modelGuard.dispose()
     }
-    const requestedDefault = config.default_run_agent?.trim()
-    if (requestedDefault) {
-      const configuredAgent = configs[requestedDefault]
-      const existingAgent = editor.get(requestedDefault)
-      const mode = configuredAgent?.mode ?? existingAgent?.mode
-      const enabledPrimary = (configuredAgent !== undefined || existingAgent !== undefined) &&
-        (mode === "primary" || mode === "all") && !isDisabled(config, requestedDefault)
-      if (enabledPrimary) {
-        editor.default(requestedDefault)
-      } else if (!defaultDiagnosticLogged) {
-        defaultDiagnosticLogged = true
-        log(`[v2 agent] default_run_agent "${requestedDefault}" is not an enabled primary native agent; preserving OpenCode's configured default.`)
-      }
-    }
-    for (const name of BUILTIN_AGENT_NAMES) {
-      if (isDisabled(config, name)) {
+
+    const registration = await ctx.agent.transform((editor) => {
+      const blocked = new Map<string, string>()
+      const markBlocked = (name: string, diagnostic: string) => blocked.set(name, diagnostic)
+      const builtInConfigs = buildV2AgentConfigs({
+        config,
+        catalog: catalog.snapshot,
+        loadedSkills,
+        directory: String(ctx.location.directory),
+        onBlocked: markBlocked,
+      })
+      const resolvedCustomAgents = customAgentConfigsWithModelPolicy(customAgents, config, catalog.snapshot, markBlocked)
+      const configs = { ...builtInConfigs, ...resolvedCustomAgents }
+      ownedAgentIDs.clear()
+      blockedModels.clear()
+      for (const name of Object.keys(configs)) ownedAgentIDs.add(name)
+      for (const [name, diagnostic] of blocked) {
+        ownedAgentIDs.add(name)
+        blockedModels.set(name, diagnostic)
         editor.remove(name)
       }
+
+      const requestedDefault = config.default_run_agent?.trim()
+      if (requestedDefault) {
+        const configuredAgent = configs[requestedDefault]
+        const existingAgent = editor.get(requestedDefault)
+        const mode = configuredAgent?.mode ?? existingAgent?.mode
+        const enabledPrimary = !blocked.has(requestedDefault) && (configuredAgent !== undefined || existingAgent !== undefined) &&
+          (mode === "primary" || mode === "all") && !isDisabled(config, requestedDefault)
+        if (enabledPrimary) {
+          editor.default(requestedDefault)
+        } else if (!defaultDiagnosticLogged) {
+          defaultDiagnosticLogged = true
+          const diagnostic = blocked.get(requestedDefault)
+          log(diagnostic
+            ? `[v2 agent] default_run_agent "${requestedDefault}" is unavailable: ${diagnostic}`
+            : `[v2 agent] default_run_agent "${requestedDefault}" is not an enabled primary native agent; preserving OpenCode's configured default.`)
+        }
+      }
+      for (const name of BUILTIN_AGENT_NAMES) {
+        if (isDisabled(config, name)) editor.remove(name)
+      }
+      for (const [name, agentConfig] of Object.entries(configs)) {
+        const next = toNativeAgentConfig(name, agentConfig, (conflict) => {
+          const key = `${conflict.agent}\u0000${conflict.action}\u0000${conflict.resource}`
+          if (reportedPermissionConflicts.has(key)) return
+          reportedPermissionConflicts.add(key)
+          log(`[v2 agent] Conflicting permission aliases for ${conflict.agent} ${conflict.action} ${conflict.resource} were reduced to the stricter "${conflict.selected}" effect.`)
+        })
+        editor.update(name, (agent) => {
+          const added = next.permissions ?? []
+          agent.id = next.id as NativeAgentInfo["id"]
+          agent.name = next.name as NativeAgentInfo["name"]
+          if (next.model !== undefined) agent.model = next.model as NativeAgentInfo["model"]
+          agent.system = next.system
+          agent.description = next.description
+          agent.mode = next.mode ?? "subagent"
+          agent.hidden = false
+          agent.color = next.color
+          agent.steps = next.steps
+          const request = next.request ?? { settings: {}, headers: {}, body: {} }
+          agent.request.settings = { ...agent.request.settings, ...request.settings }
+          Object.assign(agent.request.headers, request.headers)
+          Object.assign(agent.request.body, request.body)
+          agent.permissions.push(...added)
+        })
+      }
+    })
+    disposeAgents = () => registration.dispose()
+  } catch (error) {
+    active = false
+    const cleanupErrors: unknown[] = []
+    for (const cleanup of [disposeAgents, disposeModelGuard]) {
+      try {
+        await cleanup?.()
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError)
+      }
     }
-    for (const [name, agentConfig] of Object.entries(configs)) {
-      const next = toNativeAgentConfig(name, agentConfig, (conflict) => {
-        const key = `${conflict.agent}\u0000${conflict.action}\u0000${conflict.resource}`
-        if (reportedPermissionConflicts.has(key)) return
-        reportedPermissionConflicts.add(key)
-        log(`[v2 agent] Conflicting permission aliases for ${conflict.agent} ${conflict.action} ${conflict.resource} were reduced to the stricter "${conflict.selected}" effect.`)
-      })
-      editor.update(name, (agent) => {
-        const added = next.permissions ?? []
-        agent.id = next.id as NativeAgentInfo["id"]
-        agent.name = next.name as NativeAgentInfo["name"]
-        if (next.model !== undefined) agent.model = next.model as NativeAgentInfo["model"]
-        agent.system = next.system
-        agent.description = next.description
-        agent.mode = next.mode ?? "subagent"
-        agent.hidden = false
-        agent.color = next.color
-        agent.steps = next.steps
-        const request = next.request ?? { settings: {}, headers: {}, body: {} }
-        agent.request.settings = { ...agent.request.settings, ...request.settings }
-        Object.assign(agent.request.headers, request.headers)
-        Object.assign(agent.request.body, request.body)
-        agent.permissions.push(...added)
-      })
+    if (cleanupErrors.length > 0) throw new AggregateError([error, ...cleanupErrors], "V2 agent registration failed and cleanup was incomplete")
+    throw error
+  }
+
+  let disposed = false
+  return async () => {
+    if (disposed) return
+    disposed = true
+    active = false
+    const errors: unknown[] = []
+    for (const cleanup of [disposeAgents, disposeModelGuard]) {
+      try {
+        await cleanup?.()
+      } catch (error) {
+        errors.push(error)
+      }
     }
-  })
-  return async () => registration.dispose()
+    if (errors.length > 0) throw new AggregateError(errors, "V2 agent registrations failed to clean up")
+  }
 }

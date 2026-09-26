@@ -1,6 +1,8 @@
 import type { ModelEditor } from "@opencode/plugin/promise/model"
 import type { ProviderEditor } from "@opencode/plugin/promise/provider"
 import { AGENT_MODEL_REQUIREMENTS, transformModelForProvider } from "@oh-my-opencode/model-core"
+import { isProviderDisabled } from "../shared/disabled-providers"
+import { parseModelString } from "../shared/model-string-parser"
 
 type V2CatalogModel = {
   readonly id: string
@@ -101,65 +103,150 @@ export class V2ModelCatalog {
   }
 }
 
-function parseModelName(model: string): { providerID?: string; modelID: string } {
-  const separator = model.indexOf("/")
-  if (separator < 0) return { modelID: model }
-  return { providerID: model.slice(0, separator), modelID: model.slice(separator + 1) }
-}
-
-function findConfiguredModel(model: string, snapshot: V2ModelCatalogSnapshot): V2ModelRef | undefined {
-  const parsed = parseModelName(model)
-  const matches = snapshot.models.filter((candidate) =>
-    candidate.enabled && candidate.id === parsed.modelID &&
-    (parsed.providerID === undefined || candidate.providerID === parsed.providerID),
-  )
-  if (matches.length !== 1) return undefined
-  return { id: matches[0].id, providerID: matches[0].providerID }
-}
-
 export type V2AgentModelResolution = {
   readonly model?: string
   readonly variant?: string
   readonly source: "override" | "category" | "primary-default" | "fallback" | "unresolved"
   readonly diagnostic?: string
+  /** True only when an explicit OMO model was rejected by disabled_providers. */
+  readonly blocked?: boolean
 }
 
-/** Resolve an explicit model verbatim; only choose fallbacks present in OpenCode's live catalog. */
+export type V2ConfiguredModel = string | { readonly model: string; readonly variant?: string }
+
+function modelText(value: V2ConfiguredModel | undefined): string | undefined {
+  return typeof value === "string" ? value : value?.model
+}
+
+function findConfiguredModel(model: V2ConfiguredModel, snapshot: V2ModelCatalogSnapshot): V2ModelRef | undefined {
+  const text = modelText(model)?.trim() ?? ""
+  const parsed = parseModelString(text)
+  const matches = snapshot.models.filter((candidate) => candidate.enabled && (
+    parsed
+      ? candidate.id === parsed.modelID && candidate.providerID === parsed.providerID
+      : candidate.id === text
+  ))
+  if (matches.length !== 1) return undefined
+  return {
+    id: matches[0].id,
+    providerID: matches[0].providerID,
+    ...((typeof model !== "string" ? model.variant : undefined) ?? parsed?.variant
+      ? { variant: (typeof model !== "string" ? model.variant : undefined) ?? parsed?.variant }
+      : {}),
+  }
+}
+
+function resolvedConfiguredModel(
+  model: V2ConfiguredModel,
+  source: "override" | "category" | "fallback",
+  snapshot: V2ModelCatalogSnapshot,
+): V2AgentModelResolution {
+  const text = modelText(model)?.trim()
+  if (!text) return { source: "unresolved" }
+  const catalogModel = findConfiguredModel(model, snapshot)
+  if (catalogModel) return {
+    model: `${catalogModel.providerID}/${catalogModel.id}`,
+    ...(catalogModel.variant ? { variant: catalogModel.variant } : {}),
+    source,
+  }
+  const parsed = parseModelString(text)
+  if (parsed) {
+    return {
+      model: `${parsed.providerID}/${parsed.modelID}`,
+      ...((typeof model !== "string" ? model.variant : undefined) ?? parsed.variant
+        ? { variant: (typeof model !== "string" ? model.variant : undefined) ?? parsed.variant }
+        : {}),
+      source,
+      diagnostic: `Configured model "${text}" is not in the current OpenCode catalog; preserving the explicit provider/model value.`,
+    }
+  }
+  if (text.includes("/")) {
+    // Keep malformed-but-qualified legacy values visible to OpenCode, as before.
+    return { model: text, source, diagnostic: `Configured model "${text}" is not in the current OpenCode catalog; preserving the explicit value.` }
+  }
+  return { source: "unresolved", diagnostic: `Configured model "${text}" is not uniquely present in the current OpenCode catalog.` }
+}
+
+function resolveExplicitModel(
+  model: V2ConfiguredModel,
+  fallbacks: readonly V2ConfiguredModel[] | undefined,
+  source: "override" | "category",
+  agent: string,
+  disabledProviders: readonly string[],
+  snapshot: V2ModelCatalogSnapshot,
+): V2AgentModelResolution {
+  const text = modelText(model)?.trim()
+  if (!text) return { source: "unresolved" }
+  const selected = findConfiguredModel(model, snapshot)
+  const selectedModelRef = selected && `${selected.providerID}/${selected.id}`
+  if (!isProviderDisabled(selectedModelRef ?? text, disabledProviders)) {
+    return resolvedConfiguredModel(model, source, snapshot)
+  }
+
+  const deniedProvider = selected?.providerID ?? parseModelString(text)?.providerID ?? text.split("/", 1)[0]?.trim() ?? text
+  for (const fallback of fallbacks ?? []) {
+    const fallbackText = modelText(fallback)?.trim()
+    if (!fallbackText || isProviderDisabled(fallbackText, disabledProviders)) continue
+    const parsedFallback = parseModelString(fallbackText)
+    // A fallback must carry a provider so its policy can be evaluated without
+    // guessing from a partially-loaded catalog.
+    if (!parsedFallback) continue
+    return {
+      ...resolvedConfiguredModel(fallback, "fallback", snapshot),
+      diagnostic: `Configured model "${text}" for ${agent} uses disabled provider "${deniedProvider}"; using allowed fallback "${fallbackText}".`,
+    }
+  }
+
+  return {
+    source: "unresolved",
+    blocked: true,
+    diagnostic: `Configured model "${text}" for ${agent} uses disabled provider "${deniedProvider}" and has no allowed declared fallback. Remove it, enable the provider, or add an allowed model to the configured fallback chain.`,
+  }
+}
+
+/** Resolve OMO model choices without selecting a disabled provider. */
 export function resolveV2AgentModel(input: {
   readonly agent: string
-  readonly configuredModel?: string
-  readonly categoryModel?: string
+  readonly configuredModel?: V2ConfiguredModel
+  readonly configuredFallbacks?: readonly V2ConfiguredModel[]
+  readonly categoryModel?: V2ConfiguredModel
+  readonly categoryFallbacks?: readonly V2ConfiguredModel[]
+  readonly disabledProviders?: readonly string[]
   readonly primary: boolean
   readonly snapshot: V2ModelCatalogSnapshot
 }): V2AgentModelResolution {
-  const { agent, configuredModel, categoryModel, primary, snapshot } = input
+  const {
+    agent,
+    configuredModel,
+    configuredFallbacks,
+    categoryModel,
+    categoryFallbacks,
+    disabledProviders = [],
+    primary,
+    snapshot,
+  } = input
   for (const [model, source] of [
     [configuredModel, "override"],
     [categoryModel, "category"],
   ] as const) {
     if (!model) continue
-    const catalogModel = findConfiguredModel(model, snapshot)
-    if (catalogModel) return { model: `${catalogModel.providerID}/${catalogModel.id}`, source }
-    // Preserve an explicit provider/model reference even when it is not yet in
-    // the host catalog. OpenCode will report the same missing-provider/model
-    // problem to the user; silently substituting a different model is worse.
-    if (model.includes("/")) {
-      return {
-        model,
-        source,
-        diagnostic: `Configured model "${model}" for ${agent} is not in the current OpenCode catalog; preserving the explicit value.`,
-      }
-    }
-    const diagnostic = `Configured model "${model}" for ${agent} is not uniquely present in the current OpenCode catalog.`
-    return { source: "unresolved", diagnostic }
+    return resolveExplicitModel(
+      model,
+      source === "override" ? configuredFallbacks : categoryFallbacks,
+      source,
+      agent,
+      disabledProviders,
+      snapshot,
+    )
   }
 
   const defaultAvailable = snapshot.defaultModel && snapshot.models.some((model) =>
     model.enabled && model.providerID === snapshot.defaultModel?.providerID && model.id === snapshot.defaultModel?.modelID,
   )
-  if (primary && snapshot.defaultModel && defaultAvailable) {
+  const defaultRef = snapshot.defaultModel && `${snapshot.defaultModel.providerID}/${snapshot.defaultModel.modelID}`
+  if (primary && snapshot.defaultModel && defaultAvailable && !isProviderDisabled(defaultRef, disabledProviders)) {
     return {
-      model: `${snapshot.defaultModel.providerID}/${snapshot.defaultModel.modelID}`,
+      model: defaultRef!,
       source: "primary-default",
     }
   }
@@ -169,7 +256,8 @@ export function resolveV2AgentModel(input: {
     for (const providerID of entry.providers) {
       const modelID = transformModelForProvider(providerID, entry.model)
       const candidate = snapshot.models.find((model) =>
-        model.enabled && model.providerID === providerID && model.id === modelID,
+        model.enabled && model.providerID === providerID && model.id === modelID &&
+        !isProviderDisabled(`${model.providerID}/${model.id}`, disabledProviders),
       )
       if (candidate) {
         return {
@@ -181,16 +269,22 @@ export function resolveV2AgentModel(input: {
     }
   }
 
+  if (primary && defaultRef && isProviderDisabled(defaultRef, disabledProviders)) {
+    return {
+      source: "unresolved",
+      diagnostic: `OpenCode's configured default model "${defaultRef}" uses a provider listed in disabled_providers; no allowed OMO fallback was found for ${agent}.`,
+    }
+  }
   return { source: "unresolved" }
 }
 
 export function toV2ModelRef(model: string | undefined, variant?: string): V2ModelRef | undefined {
   if (!model) return undefined
-  const parsed = parseModelName(model)
-  if (!parsed.providerID || !parsed.modelID) return undefined
+  const parsed = parseModelString(model)
+  if (!parsed?.providerID || !parsed.modelID) return undefined
   return {
     id: parsed.modelID,
     providerID: parsed.providerID,
-    ...(variant ? { variant } : {}),
+    ...((variant ?? parsed.variant) ? { variant: variant ?? parsed.variant } : {}),
   }
 }

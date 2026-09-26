@@ -51,6 +51,7 @@ function abortableEvents({ signal }: { signal: AbortSignal }): AsyncIterable<nev
 
 type HarnessOptions = {
   config?: Record<string, unknown>
+  models?: Array<{ id: string; providerID: string; enabled: boolean }>
   runState?: ReturnType<typeof createV2SubagentRunState>
   nativeExecute?: RegisteredTool["execute"]
   nativePermissionEffect?: "allow" | "ask" | "deny"
@@ -105,7 +106,7 @@ async function harness(options: HarnessOptions = {}) {
   const ctx = {
     storage,
     location: { directory: "/repo" },
-    model: { list: async () => ({ data: [] }) },
+    model: { list: async () => ({ data: options.models ?? [] }) },
     agent: { list: async () => ({ data: [
       { id: "sisyphus-junior", mode: "subagent", permissions: options.agentPermissions?.["sisyphus-junior"] ?? [] },
       { id: "explore", mode: "subagent", permissions: options.agentPermissions?.explore ?? [] },
@@ -397,6 +398,60 @@ describe("native V2 delegation", () => {
     }
   })
 
+  test("selects the first available allowed category model after filtering disabled providers", async () => {
+    const instance = await harness({
+      config: {
+        disabled_providers: [" BLOCKED "],
+        categories: {
+          deep: { models: ["blocked/private", "openai/gpt-6-sol"] },
+        },
+      },
+      models: [
+        { id: "private", providerID: "blocked", enabled: true },
+        { id: "gpt-6-sol", providerID: "openai", enabled: true },
+      ],
+    })
+    try {
+      await instance.editor.get("task")!.execute({ category: "deep", prompt: "Inspect" }, toolContext())
+      expect(instance.nativeCalls.at(-1)).toMatchObject({ model: "openai/gpt-6-sol" })
+    } finally {
+      await instance.runtime.cleanup()
+    }
+  })
+
+  test("skips a disabled provider within a multi-provider model requirement", async () => {
+    const instance = await harness({
+      config: { disabled_providers: [" OPENAI "] },
+      models: [
+        { id: "gpt-5.6-sol-fast", providerID: "openai", enabled: true },
+        { id: "gpt-5.6-sol-fast", providerID: "chatgpt-subscription", enabled: true },
+      ],
+    })
+    try {
+      await instance.editor.get("task")!.execute({ category: "deep-low", prompt: "Inspect" }, toolContext())
+      expect(instance.nativeCalls.at(-1)).toMatchObject({ model: "chatgpt-subscription/gpt-5.6-sol-fast#medium" })
+    } finally {
+      await instance.runtime.cleanup()
+    }
+  })
+
+  test("fails a category whose explicit chain has no allowed model instead of delegating with a host default", async () => {
+    const instance = await harness({
+      config: {
+        disabled_providers: ["blocked"],
+        categories: { blocked_only: { models: ["blocked/private"] } },
+      },
+      models: [{ id: "private", providerID: "blocked", enabled: true }],
+    })
+    try {
+      await expect(instance.editor.get("task")!.execute({ category: "blocked_only", prompt: "Inspect" }, toolContext()))
+        .rejects.toThrow("only uses providers listed in disabled_providers")
+      expect(instance.nativeCalls).toHaveLength(0)
+    } finally {
+      await instance.runtime.cleanup()
+    }
+  })
+
   test("matches alias permission action and resource wildcards like OpenCode", async () => {
     const instance = await harness({
       nativePermissionEffect: "allow",
@@ -481,6 +536,26 @@ describe("native V2 delegation", () => {
       expect(instance.nativeCalls.at(-1)).not.toHaveProperty("model")
       await expectTodoDenied()
       expect(new Set((await instance.runs.get("ses-child"))?.blockedActions)).toEqual(new Set(["todowrite"]))
+    } finally {
+      await instance.runtime.cleanup()
+    }
+  })
+
+  test("rejects resuming an owned child whose stored model provider is now disabled", async () => {
+    const instance = await harness({
+      config: { disabled_providers: [" BLOCKED "] },
+      sessions: { "ses-child": {
+        id: "ses-child",
+        parentID: "ses-parent",
+        agent: "sisyphus-junior",
+        model: { providerID: "blocked", id: "persisted-model" },
+        time: { created: 100, updated: 100 },
+      } },
+    })
+    try {
+      await expect(instance.editor.get("task")!.execute({ task_id: "ses-child", prompt: "Continue" }, toolContext()))
+        .rejects.toThrow("uses a provider listed in disabled_providers")
+      expect(instance.nativeCalls).toHaveLength(0)
     } finally {
       await instance.runtime.cleanup()
     }

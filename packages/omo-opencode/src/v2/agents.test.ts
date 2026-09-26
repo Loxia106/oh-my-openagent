@@ -77,6 +77,52 @@ async function registerAgents(
   return agents
 }
 
+function createAgentEditor(agents: Map<string, any>, defaultCalls: Array<string | undefined> = []): AgentEditor {
+  return {
+    list: () => Array.from(agents.values()),
+    get: (id: string) => agents.get(id),
+    default: (id: string | undefined) => defaultCalls.push(id),
+    remove: (id: string) => { agents.delete(id) },
+    update: (id: string, update: (agent: any) => void) => {
+      const agent = agents.get(id) ?? {
+        id,
+        name: id,
+        request: { settings: {}, headers: {}, body: {} },
+        permissions: [],
+        mode: "primary",
+        hidden: false,
+      }
+      update(agent)
+      agents.set(id, agent)
+    },
+  } as unknown as AgentEditor
+}
+
+async function registerWithModelGuard(config: OhMyOpenCodeConfig, agents = new Map<string, any>()) {
+  let applyTransform: ((editor: AgentEditor) => void) | undefined
+  let modelRequest: ((input: any) => void) | undefined
+  let hookDisposeCount = 0
+  const defaultCalls: Array<string | undefined> = []
+  const ctx = {
+    location: { directory: "/tmp/omo-v2-provider-policy" },
+    session: {
+      hook: async (name: string, callback: (input: any) => void) => {
+        if (name === "model.request") modelRequest = callback
+        return { dispose: async () => { hookDisposeCount += 1 } }
+      },
+    },
+    agent: {
+      transform: async (callback: (editor: AgentEditor) => void) => {
+        applyTransform = callback
+        return { dispose: async () => undefined }
+      },
+    },
+  } as unknown as Plugin.Context
+  const cleanup = await registerV2Agents(ctx, config, [], new V2ModelCatalog())
+  applyTransform!(createAgentEditor(agents, defaultCalls))
+  return { agents, defaultCalls, modelRequest, cleanup, get hookDisposeCount() { return hookDisposeCount } }
+}
+
 describe("native v2 agents", () => {
   test("registers the complete built-in set, including Prometheus, without choosing unavailable models", () => {
     const configs = buildV2AgentConfigs({
@@ -235,6 +281,102 @@ describe("native v2 agents", () => {
     await registerV2Agents(ctx, invalidDefault, [], catalog)
     transform!(makeEditor())
     expect(defaultCalls).toEqual(["atlas"])
+  })
+
+  test("blocks an explicitly denied OMO model even when the host could otherwise supply an allowed default", async () => {
+    const existingBuiltin = new Map<string, any>([["sisyphus", { id: "sisyphus", name: "Sisyphus" }]])
+    const instance = await registerWithModelGuard({
+      disabled_providers: [" ANTHROPIC "],
+      default_run_agent: "sisyphus",
+      agents: { sisyphus: { model: "anthropic/claude-opus-5-5" } },
+    } as unknown as OhMyOpenCodeConfig, existingBuiltin)
+    try {
+      expect(instance.agents.get("sisyphus")).toBeUndefined()
+      expect(instance.defaultCalls).toEqual([])
+      expect(() => instance.modelRequest?.({
+        agent: "sisyphus",
+        model: { providerID: "openai", id: "gpt-6-sol" },
+        kind: "primary",
+        sessionID: "ses-omo",
+        headers: {},
+      })).toThrow("no allowed declared fallback")
+      // The plugin guard is scoped to configs this transform actually owns.
+      expect(() => instance.modelRequest?.({
+        agent: "host-owned-agent",
+        model: { providerID: "anthropic", id: "claude-opus-5-5" },
+        kind: "primary",
+        sessionID: "ses-host",
+        headers: {},
+      })).not.toThrow()
+    } finally {
+      await instance.cleanup()
+    }
+  })
+
+  test("blocks a disabled provider selected from an implicit host default for an OMO agent", async () => {
+    const instance = await registerWithModelGuard({ disabled_providers: ["Anthropic"] } as OhMyOpenCodeConfig)
+    try {
+      expect(() => instance.modelRequest?.({
+        agent: "sisyphus",
+        model: { providerID: "anthropic", id: "claude-opus-5-5" },
+        kind: "compaction",
+        sessionID: "ses-omo",
+        headers: {},
+      })).toThrow("model request is blocked because provider")
+    } finally {
+      await instance.cleanup()
+    }
+  })
+
+  test("resolves allowed fallback chains for OMO custom agents", async () => {
+    const instance = await registerWithModelGuard({
+      disabled_providers: ["blocked"],
+      agents: {
+        "api-builder": {
+          prompt: "Build APIs.",
+          model: "blocked/model-a",
+          fallback_models: ["openai/gpt-6-sol"],
+        },
+      },
+    } as unknown as OhMyOpenCodeConfig)
+    try {
+      expect(instance.agents.get("api-builder")?.model).toMatchObject({ providerID: "openai", id: "gpt-6-sol" })
+      expect(() => instance.modelRequest?.({
+        agent: "api-builder",
+        model: { providerID: "blocked", id: "model-a" },
+        kind: "primary",
+        sessionID: "ses-custom",
+        headers: {},
+      })).toThrow("model request is blocked because provider")
+    } finally {
+      await instance.cleanup()
+    }
+  })
+
+  test("disposes the model request guard and rolls it back if agent transform registration fails", async () => {
+    const instance = await registerWithModelGuard({ disabled_providers: ["blocked"] } as OhMyOpenCodeConfig)
+    await instance.cleanup()
+    await instance.cleanup()
+    expect(instance.hookDisposeCount).toBe(1)
+    expect(() => instance.modelRequest?.({
+      agent: "sisyphus",
+      model: { providerID: "blocked", id: "model-a" },
+      kind: "primary",
+      sessionID: "ses-omo",
+      headers: {},
+    })).not.toThrow()
+
+    let disposed = 0
+    const failing = {
+      location: { directory: "/tmp/omo-v2-provider-policy" },
+      session: {
+        hook: async () => ({ dispose: async () => { disposed += 1 } }),
+      },
+      agent: { transform: async () => { throw new Error("agent transform failed") } },
+    } as unknown as Plugin.Context
+    await expect(registerV2Agents(failing, { disabled_providers: ["blocked"] } as OhMyOpenCodeConfig, [], new V2ModelCatalog()))
+      .rejects.toThrow("agent transform failed")
+    expect(disposed).toBe(1)
   })
 
   test("bridges flat provider options with explicit OMO precedence and leaves host request body intact", async () => {

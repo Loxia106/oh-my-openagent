@@ -5,6 +5,7 @@ import type { OhMyOpenCodeConfig } from "../config"
 import { DEFAULT_CATEGORIES, CATEGORY_PROMPT_APPENDS, CATEGORY_PROMPT_APPEND_RESOLVERS } from "../tools/delegate-task/builtin-categories"
 import { buildTaskPrompt } from "../tools/delegate-task/prompt-builder"
 import { parseModelString } from "../shared/model-string-parser"
+import { isProviderDisabled } from "../shared/disabled-providers"
 import { CATEGORY_MODEL_REQUIREMENTS } from "../shared/model-requirements"
 import { stripInvisibleAgentCharacters } from "../shared/agent-display-names"
 import { resolvePromptAppend } from "../agents/builtin-agents/resolve-file-uri"
@@ -112,36 +113,55 @@ async function resolveCategoryModel(
   name: string,
   builtIn: CategoryModelConfig,
   configured: CategoryModelConfig | undefined,
+  disabledProviders: readonly string[] = [],
 ): Promise<string | undefined> {
   const available = new Set((await ctx.model.list()).data
-    .filter((model) => model.enabled)
+    .filter((model) => model.enabled && !isProviderDisabled(`${model.providerID}/${model.id}`, disabledProviders))
     .map((model) => `${model.providerID}/${model.id}`))
   const explicit = configured !== undefined && (
     configured.model !== undefined || (configured.models?.length ?? 0) > 0 || configured.fallback_models !== undefined
   )
-  const entries = configured?.models
-    ?? (configured?.fallback_models === undefined
-      ? undefined
-      : typeof configured.fallback_models === "string" ? [configured.fallback_models] : configured.fallback_models)
+  const fallbackEntries = (value: CategoryModelConfig["fallback_models"]) =>
+    value === undefined ? [] : typeof value === "string" ? [value] : [...value]
+  const configuredEntries = configured?.models?.length
+    ? [...configured.models]
+    : configured?.model !== undefined
+      ? [configured.model, ...fallbackEntries(configured.fallback_models)]
+      : configured?.fallback_models === undefined
+        ? undefined
+        : fallbackEntries(configured.fallback_models)
+  const builtInEntries = builtIn.models?.length
+    ? [...builtIn.models]
+    : builtIn.model !== undefined
+      ? [builtIn.model, ...fallbackEntries(builtIn.fallback_models)]
+      : fallbackEntries(builtIn.fallback_models)
   const candidates = explicit
-    ? (entries?.map((entry) => modelString(entry, configured?.variant)) ?? [modelString(configured?.model, configured?.variant)])
-    : [modelString(builtIn.model, builtIn.variant), ...(builtIn.models?.map((entry) => modelString(entry, builtIn.variant)) ?? [])]
+    ? (configuredEntries?.map((entry) => modelString(entry, configured?.variant)) ?? [])
+    : builtInEntries.map((entry) => modelString(entry, builtIn.variant))
   const selected = candidates.find((candidate) => candidate !== undefined && available.has(modelBase(candidate)))
   if (selected) return selected
 
   if (explicit) {
     const requested = candidates.filter((candidate): candidate is string => candidate !== undefined)
+    const disabled = requested.filter((candidate) => isProviderDisabled(candidate, disabledProviders))
+    const allowed = requested.filter((candidate) => !isProviderDisabled(candidate, disabledProviders))
     throw new ToolError({
-      message: `Configured model${requested.length === 1 ? "" : " chain"} for category "${name}" is unavailable: ${requested.join(" -> ") || "no valid provider/model was configured"}. Check connected providers or update the category model configuration.`,
+      message: disabled.length > 0 && allowed.length === 0
+        ? `Configured model${requested.length === 1 ? "" : " chain"} for category "${name}" only uses providers listed in disabled_providers: ${disabled.join(" -> ")}. Add an allowed model to the category chain or enable its provider.`
+        : `Configured model${requested.length === 1 ? "" : " chain"} for category "${name}" is unavailable: ${requested.join(" -> ") || "no valid provider/model was configured"}. Check connected providers or update the category model configuration.`,
     })
   }
 
   const requirement = CATEGORY_MODEL_REQUIREMENTS[name]
   if (requirement) {
     const fallback = requirement.fallbackChain.find((entry) =>
-      entry.providers.some((provider) => available.has(`${provider}/${entry.model}`)))
+      entry.providers.some((provider) =>
+        !isProviderDisabled(`${provider}/${entry.model}`, disabledProviders) && available.has(`${provider}/${entry.model}`),
+      ))
     if (fallback) {
-      const provider = fallback.providers.find((candidate) => available.has(`${candidate}/${fallback.model}`))!
+      const provider = fallback.providers.find((candidate) =>
+        !isProviderDisabled(`${candidate}/${fallback.model}`, disabledProviders) && available.has(`${candidate}/${fallback.model}`),
+      )!
       return `${provider}/${fallback.model}${fallback.variant ? `#${fallback.variant}` : ""}`
     }
     if (requirement.requiresAnyModel || requirement.requiresModel) {
@@ -430,6 +450,11 @@ function registerToolAliases(input: {
       if (existing.agent !== agentID) {
         throw new ToolError({ message: `Cannot continue session ${request.sessionID} as a different agent; this would change its permission profile.` })
       }
+      if (existing.model && isProviderDisabled(`${existing.model.providerID}/${existing.model.id}`, config.disabled_providers ?? [])) {
+        throw new ToolError({
+          message: `Cannot resume child session ${request.sessionID}: its stored model ${existing.model.providerID}/${existing.model.id} uses a provider listed in disabled_providers. Start a new child with an allowed model or remove that provider from the denylist.`,
+        })
+      }
       const existingRun = await runs.get(request.sessionID)
       if (existingRun && existingRun.parentSessionID !== toolContext.sessionID) {
         throw new ToolError({ message: `Session ${request.sessionID} is not owned by this parent session.` })
@@ -509,7 +534,9 @@ function registerToolAliases(input: {
           }
           agent = "sisyphus-junior"
           // A resumed native session keeps its existing model; resolve category model only for a new child.
-          model = args.task_id ? undefined : await resolveCategoryModel(ctx, categoryName, categoryConfig, config.categories?.[categoryName])
+          model = args.task_id
+            ? undefined
+            : await resolveCategoryModel(ctx, categoryName, categoryConfig, config.categories?.[categoryName], config.disabled_providers)
           const userPromptAppend = config.categories?.[categoryName]?.prompt_append
           const modelPromptAppend = CATEGORY_PROMPT_APPEND_RESOLVERS[categoryName]?.(model)
           categoryAppend = [
