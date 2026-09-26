@@ -239,12 +239,11 @@ async function withDelegationAlias<T>(
 }
 
 function evaluateRestrictions(action: string, resource: string, rules: readonly PermissionRule[]): PermissionRule["effect"] {
-  const matched = rules.filter((rule) => wildcardMatches(action, rule.action) && wildcardMatches(resource, rule.resource))
-  // Inherited permissions are a restrictive union. Allow rules never erase an ask
-  // or deny from another ancestor, regardless of the source's local rule order.
-  if (matched.some((rule) => rule.effect === "deny")) return "deny"
-  if (matched.some((rule) => rule.effect === "ask")) return "ask"
-  return "allow"
+  // Match OpenCode's ordered policy evaluation within one agent/session ruleset.
+  // The caller combines these effective decisions across ancestors separately;
+  // applying deny-overrides here would make an earlier wildcard deny defeat a
+  // later, narrower allow that OpenCode itself honors.
+  return rules.findLast((rule) => wildcardMatches(action, rule.action) && wildcardMatches(resource, rule.resource))?.effect ?? "allow"
 }
 
 async function parentRestriction(

@@ -50,6 +50,12 @@ function toolContext(sessionID = "ses-parent", agent = "sisyphus", messageID = "
   }
 }
 
+const SHELL_PERMISSION_RESOURCE = "printf 'permission-order\\n' >> '/repo/.qa-output/out.txt'"
+
+function shellPermissionEvent(sessionID = "ses-parent") {
+  return { sessionID, action: "shell", resources: [SHELL_PERMISSION_RESOURCE], effect: "allow" }
+}
+
 function abortableEvents({ signal }: { signal: AbortSignal }): AsyncIterable<never> {
   return {
     [Symbol.asyncIterator]() {
@@ -650,6 +656,114 @@ describe("native V2 delegation", () => {
       await expect(instance.editor.get("task")!.execute({ subagent_type: "explore", prompt: "Inspect" }, toolContext()))
         .rejects.toThrow("Permission denied: subagent")
       expect(instance.permissionEvents.at(-1)?.effect).toBe("deny")
+    } finally {
+      await instance.runtime.cleanup()
+    }
+  })
+
+  test("uses OpenCode last-match precedence within the root agent rules", async () => {
+    const rules = [
+      { action: "shell", resource: "*", effect: "deny" as const },
+      { action: "shell", resource: SHELL_PERMISSION_RESOURCE, effect: "allow" as const },
+    ]
+    const root = await harness({ agentPermissions: { sisyphus: rules } })
+    try {
+      const event = shellPermissionEvent()
+      await root.permissionHooks[0]!(event)
+      expect(event.effect).toBe("allow")
+    } finally {
+      await root.runtime.cleanup()
+    }
+  })
+
+  test("uses OpenCode last-match precedence within inherited agent rules", async () => {
+    const inherited = await harness({
+      agentPermissions: { sisyphus: [
+        { action: "shell", resource: "*", effect: "deny" },
+        { action: "shell", resource: SHELL_PERMISSION_RESOURCE, effect: "allow" },
+      ] },
+      sessions: {
+        "ses-child": { id: "ses-child", parentID: "ses-parent", agent: "explore", permissions: [] },
+      },
+    })
+    try {
+      const event = shellPermissionEvent("ses-child")
+      await inherited.permissionHooks[0]!(event)
+      expect(event.effect).toBe("allow")
+    } finally {
+      await inherited.runtime.cleanup()
+    }
+  })
+
+  test("keeps a later wildcard deny effective after an earlier exact allow", async () => {
+    const instance = await harness({
+      agentPermissions: { sisyphus: [
+        { action: "shell", resource: SHELL_PERMISSION_RESOURCE, effect: "allow" },
+        { action: "shell", resource: "*", effect: "deny" },
+      ] },
+    })
+    try {
+      const event = shellPermissionEvent()
+      await instance.permissionHooks[0]!(event)
+      expect(event.effect).toBe("deny")
+    } finally {
+      await instance.runtime.cleanup()
+    }
+  })
+
+  test("does not let child allows relax an ancestor's effective deny or ask", async () => {
+    const denied = await harness({
+      agentPermissions: {
+        sisyphus: [{ action: "shell", resource: "*", effect: "deny" }],
+        explore: [{ action: "shell", resource: "*", effect: "allow" }],
+      },
+      sessions: {
+        "ses-child": {
+          id: "ses-child", parentID: "ses-parent", agent: "explore",
+          permissions: [{ action: "shell", resource: SHELL_PERMISSION_RESOURCE, effect: "allow" }],
+        },
+      },
+    })
+    try {
+      const event = shellPermissionEvent("ses-child")
+      await denied.permissionHooks[0]!(event)
+      expect(event.effect).toBe("deny")
+    } finally {
+      await denied.runtime.cleanup()
+    }
+
+    const asking = await harness({
+      agentPermissions: {
+        sisyphus: [{ action: "shell", resource: "*", effect: "ask" }],
+        explore: [{ action: "shell", resource: SHELL_PERMISSION_RESOURCE, effect: "allow" }],
+      },
+      sessions: {
+        "ses-child": { id: "ses-child", parentID: "ses-parent", agent: "explore", permissions: [] },
+      },
+    })
+    try {
+      const event = shellPermissionEvent("ses-child")
+      await asking.permissionHooks[0]!(event)
+      expect(event.effect).toBe("ask")
+    } finally {
+      await asking.runtime.cleanup()
+    }
+  })
+
+  test("uses later session rules to override rules in the same agent policy", async () => {
+    const instance = await harness({
+      agentPermissions: { sisyphus: [{ action: "shell", resource: "*", effect: "deny" }] },
+      sessions: {
+        "ses-parent": {
+          id: "ses-parent", agent: "sisyphus",
+          permissions: [{ action: "shell", resource: SHELL_PERMISSION_RESOURCE, effect: "allow" }],
+        },
+      },
+    })
+    try {
+      const event = shellPermissionEvent()
+      await instance.permissionHooks[0]!(event)
+      expect(event.effect).toBe("allow")
     } finally {
       await instance.runtime.cleanup()
     }
