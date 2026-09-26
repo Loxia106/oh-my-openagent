@@ -12,17 +12,31 @@ class TestEditor {
   get(name: string) { return this.tools.get(name) }
   add(tool: RegisteredTool) { this.tools.set(tool.name, { ...tool, id: tool.name }) }
   remove(name: string) { this.tools.delete(name) }
-  update() {}
+  update(name: string, update: (tool: RegisteredTool) => void) {
+    const tool = this.tools.get(name)
+    if (tool) update(tool)
+  }
   namespace() {}
 }
 
-function memoryStorage(): Plugin.Context["storage"] {
+function memoryStorage(): Plugin.Context["storage"] & { values: Map<string, unknown> } {
   const values = new Map<string, unknown>()
-  return {
+  return Object.assign({
     get: async (key) => values.get(key),
     set: async (key, value) => { values.set(key, value) },
     remove: async (key) => { values.delete(key) },
-  } as Plugin.Context["storage"]
+    scan: async ({ prefix, after, limit = 100 }: { prefix: string; after?: string; limit?: number }) => {
+      const keys = [...values.keys()].filter((key) => key.startsWith(prefix)).sort().filter((key) => !after || key > after)
+      const entries = keys.slice(0, limit).map((key) => ({ key, value: values.get(key) }))
+      return { entries, ...(keys.length > entries.length ? { next: entries.at(-1)?.key } : {}) }
+    },
+  }, { values }) as Plugin.Context["storage"] & { values: Map<string, unknown> }
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 1500
+  while (!predicate() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 2))
+  expect(predicate()).toBe(true)
 }
 
 function toolContext(sessionID = "ses-parent", agent = "sisyphus", messageID = "msg-1", id = "call-1"): ToolContext {
@@ -51,7 +65,8 @@ function abortableEvents({ signal }: { signal: AbortSignal }): AsyncIterable<nev
 
 type HarnessOptions = {
   config?: Record<string, unknown>
-  models?: Array<{ id: string; providerID: string; enabled: boolean }>
+  models?: Array<{ id: string; providerID: string; enabled: boolean; variants?: Array<{ id: string }> }>
+  parentModel?: { providerID: string; id: string; variant?: string }
   runState?: ReturnType<typeof createV2SubagentRunState>
   nativeExecute?: RegisteredTool["execute"]
   nativePermissionEffect?: "allow" | "ask" | "deny"
@@ -70,16 +85,42 @@ async function harness(options: HarnessOptions = {}) {
   const permissionEvents: Array<Record<string, any>> = []
   const interrupted: string[] = []
   const nativeCalls: unknown[] = []
+  const defaultModels = (options.models ?? [{ id: "default-model", providerID: "provider", enabled: true }])
+    .map((model) => ({ ...model, modelID: model.id, variants: (model as any).variants ?? [] }))
   const sessions = new Map<string, Record<string, unknown>>([
-    ["ses-parent", { id: "ses-parent", agent: "sisyphus", time: { created: 1, updated: 1 }, location: { directory: "/repo" } }],
-    ...Object.entries(options.sessions ?? {}),
+    ["ses-parent", { id: "ses-parent", projectID: "project-main", agent: "sisyphus", model: options.parentModel ?? { providerID: "provider", id: "default-model" }, time: { created: 1, updated: 1 }, location: { directory: "/repo" } }],
+    ...Object.entries(options.sessions ?? {}).map(([id, session]) => [id, {
+      projectID: "project-main", location: { directory: "/repo" }, ...session,
+    }] as const),
   ])
+  const parseModel = (value: unknown) => {
+    const text = typeof value === "string" ? value.split("#", 1)[0]! : "provider/default-model"
+    const slash = text.indexOf("/")
+    return slash > 0 ? { providerID: text.slice(0, slash), id: text.slice(slash + 1) } : { providerID: "provider", id: "default-model" }
+  }
+  const childFor = (args: any, context: ToolContext, sessionID: string) => {
+    if (!sessions.has(sessionID)) {
+      sessions.set(sessionID, {
+        id: sessionID,
+        parentID: context.sessionID,
+        projectID: "project-main",
+        location: { directory: "/repo" },
+        agent: args.agent,
+        model: parseModel(args.model),
+        time: { created: Date.now(), updated: Date.now(), idle: 1 },
+      })
+    }
+  }
+  let generatedChild = 0
+  const nativeInputSchema = { fields: { nativeSubagent: true } }
+  const nativeOutputSchema = { type: "object" }
   const native: RegisteredTool = {
     id: "subagent",
     name: "subagent",
     description: "native subagent",
-    input: { fields: {} },
-    output: { type: "object" },
+    input: nativeInputSchema,
+    output: nativeOutputSchema,
+    options: { codemode: false, permission: "subagent" },
     execute: async (args, context) => {
       await options.beforePermission?.()
       const permissionEvent: Record<string, any> = {
@@ -99,18 +140,40 @@ async function harness(options: HarnessOptions = {}) {
         throw new Error(`Permission denied: subagent. ${String(permissionEvent.message ?? "")}`)
       }
       nativeCalls.push(args)
-      return options.nativeExecute ? options.nativeExecute(args, context) : { output: { sessionID: "ses-child", status: "completed", output: "done" }, content: "done" }
+      const hostContext: ToolContext = {
+        ...context,
+        progress: async (metadata) => {
+          const sessionID = typeof (metadata as any)?.sessionID === "string" ? (metadata as any).sessionID : undefined
+          if (sessionID) childFor(args, context, sessionID)
+          await context.progress(metadata)
+        },
+      }
+      const fallbackSessionID = typeof args.sessionID === "string" ? args.sessionID : `ses-child-${++generatedChild}`
+      if (!options.nativeExecute) {
+        childFor(args, context, fallbackSessionID)
+        await hostContext.progress({ sessionID: fallbackSessionID, status: "running" } as any)
+        return { output: { sessionID: fallbackSessionID, status: "completed", output: "done" }, content: "done" }
+      }
+      return options.nativeExecute(args, hostContext)
     },
   }
-  const editor = new TestEditor([native])
+  const nativeRead: RegisteredTool = {
+    id: "read", name: "read", input: { fields: {} }, output: { type: "object" }, description: "native read",
+    execute: async () => ({ output: { type: "file", encoding: "base64", mime: "image/png" }, content: "image" }),
+  }
+  const editor = new TestEditor([native, nativeRead])
   const ctx = {
     storage,
-    location: { directory: "/repo" },
-    model: { list: async () => ({ data: options.models ?? [] }) },
+    location: { directory: "/repo", workspaceID: "workspace-main", project: { id: "project-main" } },
+    model: {
+      list: async () => ({ data: defaultModels }),
+      default: async () => ({ data: defaultModels.find((model) => model.enabled) ?? null }),
+    },
     agent: { list: async () => ({ data: [
       { id: "sisyphus-junior", mode: "subagent", permissions: options.agentPermissions?.["sisyphus-junior"] ?? [] },
       { id: "explore", mode: "subagent", permissions: options.agentPermissions?.explore ?? [] },
       { id: "librarian", mode: "subagent", permissions: options.agentPermissions?.librarian ?? [] },
+      { id: "multimodal-looker", mode: "subagent", permissions: [] },
       { id: "sisyphus", mode: "primary", permissions: options.agentPermissions?.sisyphus ?? [] },
     ] }) },
     session: {
@@ -133,7 +196,7 @@ async function harness(options: HarnessOptions = {}) {
     event: { subscribe: ({ signal }: { signal: AbortSignal }) => options.eventSource?.(signal) ?? abortableEvents({ signal }) },
   } as unknown as Plugin.Context
   const runtime = await registerV2Delegation(ctx, (options.config ?? {}) as never, runs)
-  return { ctx, editor, runs, runtime, toolHooks, permissionHooks, permissionEvents, interrupted, nativeCalls, sessions }
+  return { ctx, editor, runs, runtime, storage, nativeInputSchema, nativeOutputSchema, toolHooks, permissionHooks, permissionEvents, interrupted, nativeCalls, sessions }
 }
 
 describe("native V2 delegation", () => {
@@ -209,6 +272,128 @@ describe("native V2 delegation", () => {
     }
   })
 
+  test("shares one capped native admission across direct, task, call_omo_agent, and look_at routes", async () => {
+    let directStarted!: () => void
+    let releaseDirect!: () => void
+    const directEntered = new Promise<void>((resolve) => { directStarted = resolve })
+    const directGate = new Promise<void>((resolve) => { releaseDirect = resolve })
+    let calls = 0
+    const instance = await harness({
+      config: { background_task: { defaultConcurrency: 1 } },
+      nativeExecute: async (_args, context) => {
+        const index = ++calls
+        const sessionID = `ses-shared-admission-${index}`
+        await context.progress({ sessionID, status: "running" })
+        if (index === 1) {
+          directStarted()
+          await directGate
+        }
+        return { output: { sessionID, status: "completed", output: `child ${index}` }, content: `child ${index}` }
+      },
+    })
+    const directContext = toolContext("ses-parent", "sisyphus", "msg-direct", "call-direct")
+    try {
+      const nativeTool = instance.editor.get("subagent")!
+      expect(nativeTool.input).toBe(instance.nativeInputSchema)
+      expect(nativeTool.output).toBe(instance.nativeOutputSchema)
+      expect(nativeTool.options).toEqual({ codemode: false, permission: "subagent" })
+
+      const direct = nativeTool.execute({ agent: "explore", description: "Direct", prompt: "Direct" }, directContext)
+      await directEntered
+
+      const task = instance.editor.get("task")!.execute(
+        { subagent_type: "explore", prompt: "Task alias" },
+        toolContext("ses-parent", "sisyphus", "msg-task", "call-task"),
+      )
+      const call = instance.editor.get("call_omo_agent")!.execute(
+        { subagent_type: "explore", description: "Call alias", prompt: "Call alias", run_in_background: false },
+        toolContext("ses-parent", "sisyphus", "msg-call", "call-call"),
+      )
+      const look = instance.editor.get("look_at")!.execute(
+        { image_data: "data:image/png;base64,iVBORw0KGgo=", goal: "Describe the image" },
+        toolContext("ses-parent", "sisyphus", "msg-look", "call-look"),
+      )
+
+      const leaseValues = () => [...instance.storage.values.entries()]
+        .filter(([key]) => key.includes("background-admission:lease:"))
+        .map(([, value]) => value as { status?: string })
+      await waitFor(() => leaseValues().filter((lease) => lease.status === "queued").length === 3)
+      expect(instance.nativeCalls).toHaveLength(1)
+
+      releaseDirect()
+      const results = await Promise.all([direct, task, call, look])
+      expect(results).toHaveLength(4)
+      expect(instance.nativeCalls).toHaveLength(4)
+      expect(instance.nativeCalls.every((input: any) => typeof input.model === "string" && input.model === "provider/default-model")).toBe(true)
+      expect(leaseValues()).toHaveLength(4)
+      expect(leaseValues().every((lease) => lease.status === "terminal")).toBe(true)
+      expect((await instance.runs.children("ses-parent")).sort()).toEqual([
+        "ses-shared-admission-1",
+        "ses-shared-admission-2",
+        "ses-shared-admission-3",
+        "ses-shared-admission-4",
+      ])
+    } finally {
+      releaseDirect()
+      await instance.runtime.cleanup()
+    }
+  })
+
+  test("stops before the native prompt when persisting the pre-prompt child binding fails", async () => {
+    let promptStarted = false
+    const instance = await harness({
+      nativeExecute: async (_args, context) => {
+        await context.progress({ sessionID: "ses-bind-failure", status: "running" })
+        promptStarted = true
+        return { output: { sessionID: "ses-bind-failure", status: "completed" }, content: "unreachable" }
+      },
+    })
+    const storage = instance.ctx.storage as unknown as {
+      set: (key: string, value: unknown) => Promise<void>
+    }
+    const originalSet = storage.set.bind(storage)
+    storage.set = async (key, value) => {
+      if (key.includes("background-admission:lease:")) throw new Error("admission bind persistence failed")
+      return originalSet(key, value)
+    }
+    try {
+      await expect(instance.editor.get("subagent")!.execute(
+        { agent: "explore", description: "Bind failure", prompt: "Must not start" },
+        toolContext("ses-parent", "sisyphus", "msg-bind-failure", "call-bind-failure"),
+      )).rejects.toThrow("admission bind persistence failed")
+      expect(promptStarted).toBe(false)
+      expect([...instance.storage.values.keys()].some((key) => key.includes("background-admission:lease:"))).toBe(false)
+    } finally {
+      await instance.runtime.cleanup()
+    }
+  })
+
+  test("fails closed when native success omits the awaited pre-prompt progress event", async () => {
+    const instance = await harness({
+      config: { background_task: { maxLiveDescendantsPerRoot: 1 } },
+      nativeExecute: async () => ({ output: { sessionID: "ses-without-progress", status: "running" }, content: "unverified child" }),
+    })
+    try {
+      await expect(instance.editor.get("task")!.execute(
+        { subagent_type: "explore", prompt: "No progress" },
+        toolContext("ses-parent", "sisyphus", "msg-no-progress", "call-no-progress"),
+      )).rejects.toThrow("without the required pre-prompt progress event")
+      const leaseValues = [...instance.storage.values.entries()]
+        .filter(([key]) => key.includes("background-admission:lease:"))
+        .map(([, value]) => value as { status?: string; childSessionID?: string | null })
+      expect(leaseValues).toHaveLength(1)
+      expect(leaseValues[0]).toMatchObject({ status: "creating", childSessionID: null })
+
+      await expect(instance.editor.get("task")!.execute(
+        { subagent_type: "explore", prompt: "Must remain blocked" },
+        toolContext("ses-parent", "sisyphus", "msg-no-progress-2", "call-no-progress-2"),
+      )).rejects.toThrow("maxLiveDescendantsPerRoot=1")
+      expect(instance.nativeCalls).toHaveLength(1)
+    } finally {
+      await instance.runtime.cleanup()
+    }
+  })
+
   test("does not let alias allow loosen native ask or deny", async () => {
     const asking = await harness({
       nativePermissionEffect: "ask",
@@ -233,6 +418,7 @@ describe("native V2 delegation", () => {
       }, toolContext("ses-parent", "sisyphus-junior"))).rejects.toThrow("Permission denied: subagent")
       expect(denying.permissionEvents.at(-1)?.effect).toBe("deny")
       expect(denying.nativeCalls).toHaveLength(0)
+      expect([...denying.storage.values.keys()].some((key) => key.includes("background-admission:lease:"))).toBe(false)
     } finally {
       await denying.runtime.cleanup()
     }
@@ -252,6 +438,7 @@ describe("native V2 delegation", () => {
       await expect(instance.editor.get("call_omo_agent")!.execute({
         subagent_type: "explore", prompt: "Research", description: "Research", run_in_background: false,
       }, juniorContext)).rejects.toThrow("child launch failed")
+      expect([...instance.storage.values.keys()].some((key) => key.includes("background-admission:lease:"))).toBe(false)
 
       const directNativeCheck: Record<string, any> = {
         sessionID: "ses-parent",
@@ -279,10 +466,11 @@ describe("native V2 delegation", () => {
         { action: "task", resource: "*", effect: "deny" },
         { action: "call_omo_agent", resource: "*", effect: "allow" },
       ] },
-      nativeExecute: async () => {
+      nativeExecute: async (_args, context) => {
+        await context.progress({ sessionID: "ses-background", status: "running" })
         start()
         await gate
-        return { content: "background accepted" }
+        return { output: { sessionID: "ses-background", status: "running", output: "background accepted" }, content: "background accepted" }
       },
     })
     const juniorContext = toolContext("ses-parent", "sisyphus-junior")
@@ -377,6 +565,7 @@ describe("native V2 delegation", () => {
           await context.progress({ sessionID: "ses-child" })
           return { output: { sessionID: "ses-child", status: "completed", output: "done" }, content: "done" }
         }
+        await context.progress({ sessionID: "ses-grandchild", status: "running" })
         return { output: { sessionID: "ses-grandchild", status: "completed", output: "done" }, content: "done" }
       },
     })
@@ -424,7 +613,7 @@ describe("native V2 delegation", () => {
       config: { disabled_providers: [" OPENAI "] },
       models: [
         { id: "gpt-5.6-sol-fast", providerID: "openai", enabled: true },
-        { id: "gpt-5.6-sol-fast", providerID: "chatgpt-subscription", enabled: true },
+        { id: "gpt-5.6-sol-fast", providerID: "chatgpt-subscription", enabled: true, variants: [{ id: "medium" }] },
       ],
     })
     try {
@@ -498,6 +687,8 @@ describe("native V2 delegation", () => {
         restricted: { tools: { todowrite: false } },
         broad: { tools: { todowrite: true } },
       } },
+      parentModel: { providerID: "qa", id: "stored-model" },
+      models: [{ id: "stored-model", providerID: "qa", enabled: true }],
       sessions: { "ses-child": {
         id: "ses-child",
         parentID: "ses-parent",
@@ -523,17 +714,17 @@ describe("native V2 delegation", () => {
 
       await task.execute({ task_id: "ses-child", prompt: "Continue without a selector" }, context)
       expect(instance.nativeCalls.at(-1)).toMatchObject({ agent: "sisyphus-junior", sessionID: "ses-child" })
-      expect(instance.nativeCalls.at(-1)).not.toHaveProperty("model")
+      expect(instance.nativeCalls.at(-1)).toHaveProperty("model", "qa/stored-model")
       await expectTodoDenied()
 
       await task.execute({ task_id: "ses-child", subagent_type: "sisyphus-junior", prompt: "Continue by agent" }, context)
       expect(instance.nativeCalls.at(-1)).toMatchObject({ agent: "sisyphus-junior", sessionID: "ses-child" })
-      expect(instance.nativeCalls.at(-1)).not.toHaveProperty("model")
+      expect(instance.nativeCalls.at(-1)).toHaveProperty("model", "qa/stored-model")
       await expectTodoDenied()
 
       await task.execute({ task_id: "ses-child", category: "broad", prompt: "Continue by broader category" }, context)
       expect(instance.nativeCalls.at(-1)).toMatchObject({ agent: "sisyphus-junior", sessionID: "ses-child" })
-      expect(instance.nativeCalls.at(-1)).not.toHaveProperty("model")
+      expect(instance.nativeCalls.at(-1)).toHaveProperty("model", "qa/stored-model")
       await expectTodoDenied()
       expect(new Set((await instance.runs.get("ses-child"))?.blockedActions)).toEqual(new Set(["todowrite"]))
     } finally {

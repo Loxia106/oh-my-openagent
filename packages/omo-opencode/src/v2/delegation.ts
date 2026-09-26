@@ -14,6 +14,7 @@ import { addV2Tool } from "./tool-adapter"
 import { addV2LookAtTool } from "./tool-look-at"
 import { readOwnedChildSession, type V2SessionStatus } from "./session-history"
 import type { V2SubagentRunState } from "./task-state"
+import { createV2DelegationAdmission } from "./delegation-admission"
 
 type NativeSubagent = Info & { readonly id: string }
 type ToolConfig = Readonly<Record<string, boolean>>
@@ -730,14 +731,27 @@ export async function registerV2Delegation(
 ): Promise<V2DelegationRuntime> {
   const childSessions = new Map<string, Set<string>>()
   const invocations: AliasInvocations = new Map()
-  const permissionRegistration = await registerV2SubagentPermissionGuard(ctx, runs, invocations)
+  const delegationAdmission = createV2DelegationAdmission({
+    ctx,
+    config: config.background_task,
+    runs,
+    childSessions,
+    isAliasInvocation: (context) => invocations.has(invocationKey(context)),
+  })
+  let permissionRegistration: Awaited<ReturnType<typeof registerV2SubagentPermissionGuard>> | undefined
   let toolRegistration: Awaited<ReturnType<Plugin.Context["tool"]["transform"]>> | undefined
   const eventAbort = new AbortController()
   let eventLoop: Promise<void> | undefined
   try {
+    await delegationAdmission.ready()
+    permissionRegistration = await registerV2SubagentPermissionGuard(ctx, runs, invocations)
     toolRegistration = await ctx.tool.transform((editor) => {
-      const native = editor.get("subagent")
-      if (!native) throw new Error("OpenCode V2 native subagent tool is unavailable; OMO delegation cannot be registered safely.")
+      const nativeInput = editor.get("subagent")
+      if (!nativeInput) throw new Error("OpenCode V2 native subagent tool is unavailable; OMO delegation cannot be registered safely.")
+      const native = delegationAdmission.wrap(nativeInput)
+      if (native.execute !== nativeInput.execute) {
+        editor.update("subagent", (tool) => { tool.execute = native.execute })
+      }
       const nativeSkill = editor.get("skill")
       if (toolDisabled(config, "task")) editor.remove("subagent")
       registerToolAliases({ editor, ctx, config, native, nativeSkill, runs, childSessions, invocations })
@@ -747,6 +761,7 @@ export async function registerV2Delegation(
         for await (const event of ctx.event.subscribe({ signal: eventAbort.signal })) {
           if (eventAbort.signal.aborted) break
           try {
+            await delegationAdmission.observeExecution(event)
             if (event.type === "session.execution.started") {
               await runs.markStarted(event.data.sessionID, event.created)
             } else if (event.type === "session.execution.succeeded") {
@@ -768,8 +783,16 @@ export async function registerV2Delegation(
     })()
   } catch (error) {
     eventAbort.abort()
-    await permissionRegistration.dispose()
-    await toolRegistration?.dispose()
+    const cleanupErrors: unknown[] = []
+    for (const cleanup of [
+      () => toolRegistration?.dispose(),
+      () => permissionRegistration?.dispose(),
+      () => eventLoop?.catch(() => undefined),
+      () => delegationAdmission.dispose(),
+    ]) {
+      try { await cleanup() } catch (cleanupError) { cleanupErrors.push(cleanupError) }
+    }
+    if (cleanupErrors.length > 0) throw new AggregateError([error, ...cleanupErrors], "V2 delegation setup failed and cleanup was incomplete")
     throw error
   }
 
@@ -778,9 +801,16 @@ export async function registerV2Delegation(
     childSessions,
     cleanup: async () => {
       eventAbort.abort()
-      await toolRegistration?.dispose()
-      await permissionRegistration.dispose()
-      await eventLoop?.catch(() => undefined)
+      const errors: unknown[] = []
+      for (const cleanup of [
+        () => toolRegistration?.dispose(),
+        () => permissionRegistration?.dispose(),
+        () => eventLoop?.catch(() => undefined),
+        () => delegationAdmission.dispose(),
+      ]) {
+        try { await cleanup() } catch (error) { errors.push(error) }
+      }
+      if (errors.length > 0) throw new AggregateError(errors, "V2 delegation cleanup failed")
     },
   }
 }
