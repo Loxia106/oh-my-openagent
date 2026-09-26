@@ -6,11 +6,16 @@ import type {
 } from "./types"
 import { expandEnvVarsInObject } from "./env-expander"
 
+export interface McpTransformOptions {
+  additionalAllowedMcpEnvVars?: readonly string[]
+}
+
 export function transformMcpServer(
   name: string,
-  server: ClaudeCodeMcpServer
+  server: ClaudeCodeMcpServer,
+  options: McpTransformOptions = {}
 ): McpServerConfig {
-  const expanded = expandEnvVarsInObject(server)
+  const expanded = expandEnvVarsInObject(server, options)
   const serverType = expanded.type ?? "stdio"
 
   if (serverType === "http" || serverType === "sse") {

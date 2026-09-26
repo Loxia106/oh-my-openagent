@@ -8,7 +8,7 @@ import type {
   McpLoadResult,
   McpScope,
 } from "./types"
-import { transformMcpServer } from "./transformer"
+import { transformMcpServer, type McpTransformOptions } from "./transformer"
 import { log } from "../../shared/logger"
 import { shouldLoadMcpServer } from "./scope-filter"
 import { bunFile } from "../../shared/bun-file-shim"
@@ -18,7 +18,7 @@ interface McpConfigPath {
   scope: McpScope
 }
 
-export interface McpLoaderOptions {
+export interface McpLoaderOptions extends McpTransformOptions {
   readonly cwd?: string
   readonly homeDir?: string
   readonly claudeConfigDir?: string
@@ -154,7 +154,9 @@ export async function loadMcpConfigs(
       }
 
       try {
-        const transformed = transformMcpServer(name, serverConfig)
+        const transformed = transformMcpServer(name, serverConfig, {
+          additionalAllowedMcpEnvVars: options.additionalAllowedMcpEnvVars,
+        })
         servers[name] = transformed
 
         const existingIndex = loadedServers.findIndex((s) => s.name === name)

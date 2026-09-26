@@ -2,6 +2,7 @@ import type { Plugin } from "@opencode/plugin"
 import type { MCPEditor } from "@opencode/plugin/promise/mcp"
 import type * as Mcp from "@opencode/schema/mcp"
 import { loadMcpConfigs } from "../features/claude-code-mcp-loader"
+import type { McpLoaderOptions } from "../features/claude-code-mcp-loader"
 import type { McpServerConfig } from "@oh-my-opencode/claude-code-compat-core/claude-code-mcp-loader/types"
 import { createBuiltinMcps } from "../mcp"
 import type { OhMyOpenCodeConfig } from "../config"
@@ -51,12 +52,20 @@ export function toV2McpConfig(source: McpServerConfig | BuiltinMcpSource): Nativ
 export async function loadV2McpConfigs(
   config: OhMyOpenCodeConfig,
   directory: string,
+  loaderContext: Pick<McpLoaderOptions, "homeDir" | "claudeConfigDir"> = {},
 ): Promise<Record<string, NativeMcpConfig>> {
   const disabledNames = config.disabled_mcps ?? []
   const builtin = createBuiltinMcps(disabledNames, config, { cwd: directory })
   const claude = config.claude_code?.mcp === false
     ? { servers: {} }
-    : await loadMcpConfigs(disabledNames, { cwd: directory })
+    : await loadMcpConfigs(disabledNames, {
+      ...loaderContext,
+      cwd: directory,
+      // This config has already passed OMO validation, which keeps this
+      // security-sensitive field user-scoped. Pass it explicitly so native
+      // loading cannot inherit mutable legacy additions from another config.
+      additionalAllowedMcpEnvVars: config.mcp_env_allowlist ?? [],
+    })
   const result: Record<string, NativeMcpConfig> = {}
 
   for (const [name, server] of Object.entries(builtin)) {

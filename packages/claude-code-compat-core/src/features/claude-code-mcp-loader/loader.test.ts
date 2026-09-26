@@ -4,6 +4,10 @@ import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from "bun:te
 import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "fs"
 import { join } from "path"
 import { homedir, tmpdir } from "os"
+import {
+  resetAdditionalAllowedMcpEnvVars,
+  setAdditionalAllowedMcpEnvVars,
+} from "./configure-allowed-env-vars"
 
 // mkdtempSync, never a clock-derived name: consecutive Date.now() calls in one process
 // return the same millisecond, so sibling suites sharing this prefix collided on one
@@ -405,6 +409,98 @@ describe("loadMcpConfigs", () => {
       expect(result.servers).toHaveProperty("playwright")
     } finally {
 
+    }
+  })
+
+  it("uses explicit env allowlists independently for concurrent project loads", async () => {
+    const { loadMcpConfigs } = await import("./loader")
+    const projectA = join(TEST_DIR, "project-a")
+    const projectB = join(TEST_DIR, "project-b")
+    mkdirSync(projectA, { recursive: true })
+    mkdirSync(projectB, { recursive: true })
+
+    const variableNames = [
+      "OMO_LOADER_A_API_TOKEN",
+      "OMO_LOADER_B_API_TOKEN",
+      "OMO_LOADER_GLOBAL_API_TOKEN",
+    ] as const
+    const originalValues = new Map(variableNames.map((name) => [name, process.env[name]]))
+
+    try {
+      process.env.OMO_LOADER_A_API_TOKEN = "project-a-secret"
+      process.env.OMO_LOADER_B_API_TOKEN = "project-b-secret"
+      process.env.OMO_LOADER_GLOBAL_API_TOKEN = "legacy-global-secret"
+      setAdditionalAllowedMcpEnvVars(["OMO_LOADER_GLOBAL_API_TOKEN"])
+      writeFileSync(join(projectA, ".mcp.json"), JSON.stringify({
+        mcpServers: {
+          "project-a-mcp": {
+            command: "node",
+            args: ["${OMO_LOADER_A_API_TOKEN}|${OMO_LOADER_B_API_TOKEN}|${OMO_LOADER_GLOBAL_API_TOKEN}"],
+          },
+        },
+      }))
+      writeFileSync(join(projectB, ".mcp.json"), JSON.stringify({
+        mcpServers: {
+          "project-b-mcp": {
+            command: "node",
+            args: ["${OMO_LOADER_A_API_TOKEN}|${OMO_LOADER_B_API_TOKEN}|${OMO_LOADER_GLOBAL_API_TOKEN}"],
+          },
+        },
+      }))
+
+      const [resultA, resultB] = await Promise.all([
+        loadMcpConfigs([], {
+          ...loaderOptions(projectA),
+          additionalAllowedMcpEnvVars: ["OMO_LOADER_A_API_TOKEN"],
+        }),
+        loadMcpConfigs([], {
+          ...loaderOptions(projectB),
+          additionalAllowedMcpEnvVars: ["OMO_LOADER_B_API_TOKEN"],
+        }),
+      ])
+
+      expect(resultA.servers["project-a-mcp"]).toMatchObject({
+        type: "local",
+        command: ["node", "project-a-secret||"],
+      })
+      expect(resultB.servers["project-b-mcp"]).toMatchObject({
+        type: "local",
+        command: ["node", "|project-b-secret|"],
+      })
+    } finally {
+      resetAdditionalAllowedMcpEnvVars()
+      for (const [name, value] of originalValues) {
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
+    }
+  })
+
+  it("preserves legacy global additions when a loader caller omits the explicit allowlist", async () => {
+    const { loadMcpConfigs } = await import("./loader")
+    const variableName = "OMO_LOADER_LEGACY_API_TOKEN"
+    const originalValue = process.env[variableName]
+    try {
+      process.env[variableName] = "legacy-approved-secret"
+      setAdditionalAllowedMcpEnvVars([variableName])
+      writeFileSync(join(TEST_DIR, ".mcp.json"), JSON.stringify({
+        mcpServers: {
+          "legacy-global-mcp": {
+            command: "node",
+            args: ["${" + variableName + "}"],
+          },
+        },
+      }))
+
+      const result = await loadMcpConfigs([], loaderOptions())
+      expect(result.servers["legacy-global-mcp"]).toMatchObject({
+        type: "local",
+        command: ["node", "legacy-approved-secret"],
+      })
+    } finally {
+      resetAdditionalAllowedMcpEnvVars()
+      if (originalValue === undefined) delete process.env[variableName]
+      else process.env[variableName] = originalValue
     }
   })
 })
