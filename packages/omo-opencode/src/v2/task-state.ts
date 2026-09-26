@@ -185,7 +185,16 @@ export function createV2SubagentRunState(storage: Plugin.Context["storage"]) {
       return decodeSubagentRun(await storage.get(subagentRunKey(sessionID)))
     },
     async recordLaunch(sessionID: string, run: V2SubagentRun): Promise<void> {
-      await update(sessionID, () => run)
+      await update(sessionID, (current) => {
+        if (current && current.parentSessionID !== run.parentSessionID) {
+          throw new Error(`Cannot change parent ownership for subagent session ${sessionID}.`)
+        }
+        return {
+          ...run,
+          startedAt: Math.max(current?.startedAt ?? run.startedAt, run.startedAt),
+          blockedActions: [...new Set([...(current?.blockedActions ?? []), ...run.blockedActions])],
+        }
+      })
       await updateChildren(run.parentSessionID, (children) => [...children, sessionID])
     },
     children: listChildren,

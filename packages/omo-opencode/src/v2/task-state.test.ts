@@ -52,6 +52,48 @@ describe("native V2 task state", () => {
     expect(await runs.get("ses-grandchild")).toBeUndefined()
   })
 
+  test("merges concurrent resumed restrictions and keeps the original parent owner", async () => {
+    const runs = createV2SubagentRunState(storage())
+    await runs.recordLaunch("ses-child", {
+      parentSessionID: "ses-parent",
+      startedAt: 100,
+      status: "running",
+      blockedActions: ["todowrite"],
+    })
+
+    await Promise.all([
+      runs.recordLaunch("ses-child", {
+        parentSessionID: "ses-parent",
+        startedAt: 120,
+        status: "running",
+        blockedActions: [],
+      }),
+      runs.recordLaunch("ses-child", {
+        parentSessionID: "ses-parent",
+        startedAt: 110,
+        status: "running",
+        blockedActions: ["edit"],
+      }),
+    ])
+
+    const merged = await runs.get("ses-child")
+    expect(merged?.startedAt).toBe(120)
+    expect(new Set(merged?.blockedActions)).toEqual(new Set(["todowrite", "edit"]))
+    await expect(runs.recordLaunch("ses-child", {
+      parentSessionID: "ses-other-parent",
+      startedAt: 130,
+      status: "running",
+      blockedActions: [],
+    })).rejects.toThrow("Cannot change parent ownership")
+    expect(await runs.get("ses-child")).toMatchObject({
+      parentSessionID: "ses-parent",
+      startedAt: 120,
+      blockedActions: expect.arrayContaining(["todowrite", "edit"]),
+    })
+    expect(await runs.children("ses-parent")).toEqual(["ses-child"])
+    expect(await runs.children("ses-other-parent")).toEqual([])
+  })
+
   test("keeps a bounded observed-session index for read-only session inspection", async () => {
     const runs = createV2SubagentRunState(storage())
     await Promise.all(Array.from({ length: 20 }, (_, index) => runs.observe("ses-parent", `ses-history-${index}`)))

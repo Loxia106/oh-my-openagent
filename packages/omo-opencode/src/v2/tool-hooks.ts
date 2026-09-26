@@ -1,5 +1,10 @@
 import type { Plugin } from "@opencode/plugin"
+import { Error as ToolError, type Result as NativeToolResult } from "@opencode/plugin/promise/tool"
+import type { ShellCreateBefore } from "@opencode/plugin/promise/shell"
 import type { OhMyOpenCodeConfig } from "../config"
+import { NON_INTERACTIVE_ENV } from "../hooks/non-interactive-env/constants"
+import { createNotepadWriteGuardHook } from "../hooks/notepad-write-guard"
+import { NOTEPAD_DIRECTIVE } from "../hooks/sisyphus-junior-notepad/constants"
 import { computeLineHash } from "../tools/hashline-edit/hash-computation"
 import { isCanonicallyAllowedMarkdown } from "./path-policy"
 
@@ -14,6 +19,48 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isPrometheus(agent: string | undefined): boolean {
 	return agent?.toLowerCase() === PROMETHEUS_AGENT
+}
+
+function isToolDisabled(config: OhMyOpenCodeConfig, name: string): boolean {
+	return config.disabled_tools?.some((tool) => tool.trim().toLowerCase() === name) ?? false
+}
+
+function textFromContent(content: NativeToolResult["content"]): string {
+	if (typeof content === "string") return content
+	if (!Array.isArray(content)) return ""
+	return content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n")
+}
+
+function appendTextContent(content: NativeToolResult["content"], text: string): NativeToolResult["content"] {
+	if (typeof content === "string") return `${content.trimEnd()}${content.trim() ? "\n\n" : ""}${text}`
+	return [...(content ?? []), { type: "text", text }]
+}
+
+function resumeSessionID(result: NativeToolResult): string | undefined {
+	if (!isRecord(result.metadata)) return undefined
+	const id = result.metadata.sessionID
+	return typeof id === "string" && id.startsWith("ses") && id.trim() === id ? id : undefined
+}
+
+function appendTaskResumeHint(
+	result: NativeToolResult,
+	input: unknown,
+	config: OhMyOpenCodeConfig,
+): NativeToolResult {
+	if (isToolDisabled(config, "task")) return result
+	const sessionID = resumeSessionID(result)
+	if (!sessionID) return result
+	const metadata = isRecord(result.metadata) ? result.metadata : undefined
+	const status = metadata?.status
+	if (typeof status === "string" && status !== "completed") return result
+	const data = isRecord(input) ? input : {}
+	const existingSessionID = typeof data.task_id === "string" ? data.task_id
+		: typeof data.session_id === "string" ? data.session_id : undefined
+	if (existingSessionID && existingSessionID !== sessionID) return result
+	const previousText = textFromContent(result.content)
+	if (/^\s*(?:Error:|Failed\b)/i.test(previousText) || /to continue: task\(/i.test(previousText)) return result
+	const hint = `to continue: task(task_id=${JSON.stringify(sessionID)}, prompt="...")`
+	return { ...result, content: appendTextContent(result.content, hint) }
 }
 
 function enhanceText(text: string): string {
@@ -78,12 +125,55 @@ export async function registerV2ToolHooks(ctx: Plugin.Context, config: OhMyOpenC
 			cleanups.push(() => permission.dispose())
 		}
 
+		if (!disabled.has("non-interactive-env")) {
+			const nonInteractive = await ctx.shell.hook("create.before", (event: ShellCreateBefore) => {
+				// Keep the legacy trigger boundary: any command containing the git executable name.
+				if (!/\bgit\b/i.test(event.command)) return
+				Object.assign(event.env, NON_INTERACTIVE_ENV)
+			})
+			cleanups.push(() => nonInteractive.dispose())
+		}
+
+		if (!disabled.has("notepad-write-guard")) {
+			const notepadGuard = createNotepadWriteGuardHook()["tool.execute.before"]!
+			const registration = await ctx.tool.hook("execute.before", async (event) => {
+				try {
+					await notepadGuard(
+						{ tool: event.tool, sessionID: event.sessionID, callID: event.id },
+						{ args: isRecord(event.input) ? event.input : {} },
+					)
+				} catch (error) {
+					if (!(error instanceof Error)) throw error
+					throw new ToolError({ message: error.message })
+				}
+			})
+			cleanups.push(() => registration.dispose())
+		}
+
+		if (!disabled.has("sisyphus-junior-notepad") && !isToolDisabled(config, "task")) {
+			const atlasDirective = await ctx.tool.hook("execute.before", (event) => {
+				if (event.tool !== "task" || event.agent !== "atlas" || !isRecord(event.input)) return
+				const prompt = event.input.prompt
+				if (typeof prompt !== "string" || prompt.includes("<Work_Context>")) return
+				event.input = { ...event.input, prompt: `${NOTEPAD_DIRECTIVE}${prompt}` }
+			})
+			cleanups.push(() => atlasDirective.dispose())
+		}
+
 		if (config.hashline_edit === true && !disabled.has("hashline-read-enhancer")) {
 			const readEnhancer = await ctx.tool.hook("execute.after", (event) => {
 				if (event.status !== "completed" || event.tool.toLowerCase() !== READ_TOOL) return
 				event.result = enhanceReadResult(event.result) as typeof event.result
 			})
 			cleanups.push(() => readEnhancer.dispose())
+		}
+
+		if (!disabled.has("task-resume-info")) {
+			const resumeInfo = await ctx.tool.hook("execute.after", (event) => {
+				if (event.status !== "completed" || (event.tool !== "task" && event.tool !== "call_omo_agent")) return
+				event.result = appendTaskResumeHint(event.result, event.input, config) as typeof event.result
+			})
+			cleanups.push(() => resumeInfo.dispose())
 		}
 	} catch (error) {
 		const cleanupErrors: unknown[] = []
