@@ -8,6 +8,7 @@ import { createGoalController, type GoalController } from "../hooks/goal/control
 import { buildContinuationPrompt } from "../hooks/goal/prompt"
 import type { TokenUsageSnapshot } from "../hooks/goal/types"
 import { log } from "../shared/logger"
+import { handleV2CompletedBoulder, isV2ActiveBoulderWork } from "./boulder-completion"
 import { isCanonicallyAllowedMarkdown } from "./path-policy"
 import { getV2TodoState, type V2TodoItem } from "./task-state"
 
@@ -124,15 +125,19 @@ async function readActivePlan(ctx: Plugin.Context, sessionID: string): Promise<{
 	content?: string
 } | undefined> {
 	const directory = String(ctx.location.directory)
-	const work = getActiveWorks(directory).find((candidate) =>
-		candidate.session_ids.some((id) => normalizeSessionId(id) === normalizeSessionId(sessionID)),
+	const matches = getActiveWorks(directory).filter((candidate) =>
+		isV2ActiveBoulderWork(candidate) && candidate.session_ids.some((id) => normalizeSessionId(id) === normalizeSessionId(sessionID)),
 	)
-	if (!work) return undefined
+	if (matches.length !== 1) {
+		if (matches.length > 1) log("[v2 lifecycle] Multiple active Boulder works match one session; skipping plan continuation.", { sessionID })
+		return undefined
+	}
+	const work = matches[0]
 	const path = resolveBoulderPlanPathForWork(directory, work)
 	const workspace = work.worktree_path ? resolve(directory, work.worktree_path) : directory
 	if (!(await isCanonicallyAllowedMarkdown(path, workspace))) return undefined
 	const progress = getPlanProgress(path)
-	if (progress.isComplete) return undefined
+	if (progress.isComplete || progress.total === 0) return undefined
 	try {
 		const content = await readFile(path, "utf8")
 		return { path, progress, content: content.slice(0, MAX_PLAN_CONTEXT_CHARS) }
@@ -257,7 +262,9 @@ async function buildContinuation(ctx: Plugin.Context, config: OhMyOpenCodeConfig
 		}
 	}
 
-	const plan = config.disabled_hooks?.includes("todo-continuation-enforcer") ? undefined : await readActivePlan(ctx, sessionID)
+	const plan = config.disabled_hooks?.includes("todo-continuation-enforcer") || config.disabled_hooks?.includes("atlas")
+		? undefined
+		: await readActivePlan(ctx, sessionID)
 	if (plan) {
 		const progress = plan.progress.total > 0 ? `${plan.progress.completed}/${plan.progress.total} checklist items complete` : "active plan remains unfinished"
 		sections.push(`Continue the active Boulder plan at ${plan.path} (${progress}). Inspect its remaining checklist and continue the next unfinished task.`)
@@ -272,17 +279,54 @@ function stopResumePrompt(input: SessionPrompt, state: V2ContinuationState): voi
 	else if (RESUME.test(text)) state.resume(input.sessionID)
 }
 
-async function onIdle(ctx: Plugin.Context, config: OhMyOpenCodeConfig, state: V2ContinuationState, sessionID: string): Promise<void> {
-	if (state.isStopped(sessionID) || !state.markPending(sessionID)) return
+async function onExecutionSucceeded(
+	ctx: Plugin.Context,
+	config: OhMyOpenCodeConfig,
+	state: V2ContinuationState,
+	sessionID: string,
+	signal: AbortSignal,
+): Promise<void> {
+	const canProceed = () => !signal.aborted && !state.isStopped(sessionID)
+	if (!canProceed()) {
+		state.clearPending(sessionID)
+		return
+	}
+	if (!state.markPending(sessionID)) return
 	try {
 		const session = await ctx.session.get({ sessionID })
+		if (!canProceed()) {
+			state.clearPending(sessionID)
+			return
+		}
+		if (
+			String(session.location?.directory ?? "") !== String(ctx.location.directory) ||
+			String(session.projectID ?? "") !== String(ctx.location.project.id)
+		) {
+			state.clearPending(sessionID)
+			return
+		}
 		accountUsageUpdate(getV2GoalController(ctx), state, sessionID, session.tokens)
 		const outcome = state.outcome.get(sessionID)
 		if (outcome === "failed" || outcome === "interrupted" || outcome === "running" || session.outcome !== "succeeded") {
 			state.clearPending(sessionID)
 			return
 		}
+		if (!config.disabled_hooks?.includes("atlas")) {
+			const boulderResult = await handleV2CompletedBoulder(ctx, sessionID, {
+				signal,
+				isStopped: () => state.isStopped(sessionID),
+			})
+			if (!canProceed()) {
+				state.clearPending(sessionID)
+				return
+			}
+			if (boulderResult === "submitted") return
+		}
 		const text = await buildContinuation(ctx, config, sessionID)
+		if (!canProceed()) {
+			state.clearPending(sessionID)
+			return
+		}
 		if (!text) {
 			state.clearPending(sessionID)
 			return
@@ -319,7 +363,7 @@ export async function registerV2LifecycleHooks(ctx: Plugin.Context, config: OhMy
 			cleanups.push(() => compaction.dispose())
 		}
 
-		if (!disabled.has("goal") || !disabled.has("todo-continuation-enforcer")) {
+		if (!disabled.has("goal") || !disabled.has("todo-continuation-enforcer") || !disabled.has("atlas")) {
 			const goalController = getV2GoalController(ctx)
 			const usageHydration = hydrateGoalUsageBaselines(ctx, goalController, state)
 				.catch((error) => log("[v2 lifecycle] Goal usage baseline hydration failed.", error))
@@ -330,7 +374,12 @@ export async function registerV2LifecycleHooks(ctx: Plugin.Context, config: OhMy
 					try {
 						for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
 							if (controller.signal.aborted) break
-							if (event.location?.directory && String(event.location.directory) !== String(ctx.location.directory)) continue
+							const eventWorkspaceID = event.location && "workspaceID" in event.location ? event.location.workspaceID : undefined
+							if (
+								event.location &&
+								(String(event.location.directory) !== String(ctx.location.directory) ||
+									(eventWorkspaceID !== undefined && eventWorkspaceID !== ctx.location.workspaceID))
+							) continue
 							try {
 								if (event.type === "session.usage.updated") {
 									accountUsageUpdate(goalController, state, event.data.sessionID, event.data.tokens)
@@ -338,15 +387,20 @@ export async function registerV2LifecycleHooks(ctx: Plugin.Context, config: OhMy
 									state.clearPending(event.data.sessionID)
 									state.outcome.set(event.data.sessionID, "running")
 									state.executionStartedAt.set(event.data.sessionID, event.created)
-								} else if (event.type === "session.execution.succeeded" || event.type === "session.execution.failed" || event.type === "session.execution.interrupted") {
-									const outcome = event.type === "session.execution.succeeded" ? "succeeded" : event.type === "session.execution.failed" ? "failed" : "interrupted"
+								} else if (event.type === "session.execution.succeeded") {
+									if (state.outcome.get(event.data.sessionID) === "succeeded") continue
+									state.outcome.set(event.data.sessionID, "succeeded")
+									const startedAt = state.executionStartedAt.get(event.data.sessionID)
+									state.executionStartedAt.delete(event.data.sessionID)
+									if (startedAt !== undefined) accountGoalTime(goalController, event.data.sessionID, Math.max(0, Math.floor((event.created - startedAt) / 1000)))
+									await onExecutionSucceeded(ctx, config, state, event.data.sessionID, controller.signal)
+								} else if (event.type === "session.execution.failed" || event.type === "session.execution.interrupted") {
+									const outcome = event.type === "session.execution.failed" ? "failed" : "interrupted"
 									state.outcome.set(event.data.sessionID, outcome)
 									state.clearPending(event.data.sessionID)
 									const startedAt = state.executionStartedAt.get(event.data.sessionID)
 									state.executionStartedAt.delete(event.data.sessionID)
 									if (startedAt !== undefined) accountGoalTime(goalController, event.data.sessionID, Math.max(0, Math.floor((event.created - startedAt) / 1000)))
-								} else if (event.type === "session.idle") {
-									await onIdle(ctx, config, state, event.data.sessionID)
 								} else if (event.type === "session.deleted") {
 									state.clearSession(event.data.sessionID)
 									goalController.clearGoal(event.data.sessionID)
