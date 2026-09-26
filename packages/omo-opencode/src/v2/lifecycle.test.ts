@@ -86,6 +86,10 @@ function makeContext(directory: string, finalOutcome: "succeeded" | "failed" | "
 			})
 			wake?.()
 		},
+		pushWithoutLocation(type: TestEvent["type"], sessionID: string) {
+			events.push({ type, data: { sessionID }, created: Date.now() })
+			wake?.()
+		},
 	}
 }
 
@@ -212,6 +216,34 @@ describe("native v2 lifecycle hooks", () => {
 		push("session.execution.succeeded", "ses-other-workspace", { directory, workspaceID: "workspace-other" })
 		await new Promise((resolve) => setTimeout(resolve, 30))
 		expect(synthetics).toEqual([])
+		await cleanup()
+	})
+
+	test("runs additional deletion cleanup only for events with the exact native location", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "omo-v2-lifecycle-delete-"))
+		roots.push(directory)
+		const { ctx, subscribed, push, pushWithoutLocation } = makeContext(directory)
+		const deleted: string[] = []
+		const cleanup = await registerV2LifecycleHooks(ctx, {
+			disabled_hooks: [
+				"stop-continuation-guard", "compaction-context-injector", "compaction-todo-preserver",
+				"goal", "todo-continuation-enforcer", "atlas",
+			],
+		} as OhMyOpenCodeConfig, {
+			onSessionDeleted: async (sessionID) => { deleted.push(sessionID) },
+		})
+		await subscribed
+
+		push("session.deleted", "ses-current-location")
+		await waitUntil(() => deleted.length === 1)
+		push("session.deleted", "ses-other-directory", { directory: `${directory}-other`, workspaceID: "workspace-main" })
+		push("session.deleted", "ses-other-workspace", { directory, workspaceID: "workspace-other" })
+		push("session.deleted", "ses-location-without-workspace", { directory })
+		pushWithoutLocation("session.deleted", "ses-unlocated")
+		push("session.deleted", "ses-current-location-after-foreign-events")
+		await waitUntil(() => deleted.length === 2)
+
+		expect(deleted).toEqual(["ses-current-location", "ses-current-location-after-foreign-events"])
 		await cleanup()
 	})
 

@@ -32,6 +32,11 @@ export type V2ContinuationState = {
 	clearSession(sessionID: string): void
 }
 
+export type V2LifecycleDependencies = {
+	/** Additional per-session cleanup owned by other V2 modules. */
+	onSessionDeleted?: (sessionID: string) => Promise<void>
+}
+
 type UsageTotals = { input: number; output: number; cacheRead: number; cacheWrite: number }
 
 function usageTotals(value: unknown): UsageTotals | undefined {
@@ -345,7 +350,11 @@ async function onExecutionSucceeded(
 }
 
 /** Register native compaction preservation and gated goal/todo/Boulder continuation. */
-export async function registerV2LifecycleHooks(ctx: Plugin.Context, config: OhMyOpenCodeConfig): Promise<() => Promise<void>> {
+export async function registerV2LifecycleHooks(
+	ctx: Plugin.Context,
+	config: OhMyOpenCodeConfig,
+	dependencies: V2LifecycleDependencies = {},
+): Promise<() => Promise<void>> {
 	const cleanups: Array<() => Promise<void>> = []
 	const state = getV2ContinuationState(ctx)
 	const disabled = new Set(config.disabled_hooks ?? [])
@@ -363,7 +372,7 @@ export async function registerV2LifecycleHooks(ctx: Plugin.Context, config: OhMy
 			cleanups.push(() => compaction.dispose())
 		}
 
-		if (!disabled.has("goal") || !disabled.has("todo-continuation-enforcer") || !disabled.has("atlas")) {
+		if (!disabled.has("goal") || !disabled.has("todo-continuation-enforcer") || !disabled.has("atlas") || dependencies.onSessionDeleted) {
 			const goalController = getV2GoalController(ctx)
 			const usageHydration = hydrateGoalUsageBaselines(ctx, goalController, state)
 				.catch((error) => log("[v2 lifecycle] Goal usage baseline hydration failed.", error))
@@ -375,6 +384,11 @@ export async function registerV2LifecycleHooks(ctx: Plugin.Context, config: OhMy
 						for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
 							if (controller.signal.aborted) break
 							const eventWorkspaceID = event.location && "workspaceID" in event.location ? event.location.workspaceID : undefined
+							if (event.type === "session.deleted" && (
+								!event.location ||
+								String(event.location.directory) !== String(ctx.location.directory) ||
+								eventWorkspaceID !== ctx.location.workspaceID
+							)) continue
 							if (
 								event.location &&
 								(String(event.location.directory) !== String(ctx.location.directory) ||
@@ -402,6 +416,13 @@ export async function registerV2LifecycleHooks(ctx: Plugin.Context, config: OhMy
 									state.executionStartedAt.delete(event.data.sessionID)
 									if (startedAt !== undefined) accountGoalTime(goalController, event.data.sessionID, Math.max(0, Math.floor((event.created - startedAt) / 1000)))
 								} else if (event.type === "session.deleted") {
+									if (dependencies.onSessionDeleted) {
+										try {
+											await dependencies.onSessionDeleted(event.data.sessionID)
+										} catch (error) {
+											log("[v2 lifecycle] Could not clear additional deleted-session state.", { sessionID: event.data.sessionID, error })
+										}
+									}
 									state.clearSession(event.data.sessionID)
 									goalController.clearGoal(event.data.sessionID)
 									await getV2TodoState(ctx.storage).clear(event.data.sessionID)

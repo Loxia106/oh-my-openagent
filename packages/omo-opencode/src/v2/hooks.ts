@@ -6,6 +6,8 @@ import { registerV2LifecycleHooks } from "./lifecycle"
 import { registerV2RecoveryHooks } from "./recovery-hooks"
 import { registerV2SafetyHooks } from "./safety-hooks"
 import { registerV2ToolHooks } from "./tool-hooks"
+import { registerV2BackgroundToolPolicy } from "./background-tool-policy"
+import { getV2SubagentRunState } from "./task-state"
 
 async function unwind(cleanups: Array<() => Promise<void>>): Promise<unknown[]> {
 	const errors: unknown[] = []
@@ -28,7 +30,11 @@ export async function registerV2Hooks(ctx: Plugin.Context, config: OhMyOpenCodeC
 		cleanups.push(await registerV2SafetyHooks(ctx, config))
 		cleanups.push(await registerV2InstructionHooks(ctx, config))
 		cleanups.push(await registerV2RecoveryHooks(ctx, config))
-		cleanups.push(await registerV2LifecycleHooks(ctx, config))
+		const backgroundToolPolicy = await registerV2BackgroundToolPolicy(ctx, config, getV2SubagentRunState(ctx.storage))
+		cleanups.push(() => backgroundToolPolicy.cleanup())
+		cleanups.push(await registerV2LifecycleHooks(ctx, config, {
+			onSessionDeleted: (sessionID) => backgroundToolPolicy.forget(sessionID),
+		}))
 	} catch (error) {
 		const cleanupErrors = await unwind(cleanups)
 		if (cleanupErrors.length > 0) {
