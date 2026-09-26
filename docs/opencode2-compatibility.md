@@ -1,6 +1,6 @@
-# OpenCode 2.0 compatibility (personal fork)
+# OpenCode 2.0.18 compatibility (personal fork from upstream 5.0.0)
 
-This document describes the native plugin adapter in this fork at the pinned `@opencode/*` **2.0.18** SDK/schema version. The legacy OpenCode 1.x entry remains separate. The v2 adapter is an in-progress compatibility layer; it does not provide full OMO parity and this table is not a claim that each behavior has passed an end-to-end runtime test.
+This fork is based on the upstream Oh My OpenAgent **5.0.0** release, with local native OpenCode 2 compatibility work at the pinned `@opencode/*` **2.0.18** SDK/schema version. The legacy OpenCode 1.x entry remains separate. The v2 adapter is still incomplete; the table is not a claim of full OMO parity or end-to-end verification for every behavior.
 
 The native server entry is `packages/omo-opencode/src/v2/server-entry.ts` and exports the OpenCode 2 plugin definition (`id` plus `setup`). Native registries, tools, and hooks are assembled by `src/v2/setup.ts`. The build stages `server.js`, `tui.js`, shared skill files, and LSP runtime assets under `dist/opencode2/`. The entry bundles externalize `@opencode/*`, OpenTUI, and Solid packages, so this directory is not verified as a relocatable standalone plugin. The installer edits only a user-selected OpenCode config file.
 
@@ -38,7 +38,7 @@ Status key: **Ported** means an OMO implementation is registered through the v2 
 | `compaction-context-injector` | **Partial.** Adds active goal and Boulder plan context through the native compaction hook. |
 | `compaction-todo-preserver` | **Ported with native storage.** Adds the persisted OMO todo list to compaction context when present. |
 | `claude-code-hooks` | **Not ported.** The Claude hook runner and matcher lifecycle are not registered. |
-| `auto-slash-command` | **Not ported.** The legacy command discovery is not wired to a v2 server command registry. |
+| `auto-slash-command` | **Partial.** The seven built-in OMO commands are registered through the native command API. Discovery of user/project custom OMO command files from the legacy command loader is not ported. |
 | `edit-error-recovery` | **Not ported.** |
 | `json-error-recovery` | **Not ported.** |
 | `delegate-task-retry` | **Not ported.** Native delegation is present, but legacy retry/recovery behavior is absent. |
@@ -48,7 +48,7 @@ Status key: **Ported** means an OMO implementation is registered through the v2 
 | `no-sisyphus-gpt` | **Not ported.** |
 | `no-hephaestus-non-gpt` | **Not ported.** Hephaestus model filtering still applies during agent registration, but this hook's runtime fallback behavior is not ported. |
 | `hephaestus-agents-md-injector` | **Not ported.** |
-| `ulw-execute` | **Not ported.** No native `/ulw-execute` command is registered. |
+| `ulw-execute` | **Partial.** Native `/ulw-execute` switches to Atlas (or Sisyphus when Atlas is absent), reads recent native session context for plan affinity, prepares scoped Boulder/worktree context, and submits one prompt. It does not reproduce every legacy interactive/retry behavior. `disabled_hooks: ["ulw-execute"]` keeps the command/template and agent selection but skips the context/Boulder preparation. |
 | `atlas` | **Partial.** On native `session.execution.succeeded`, the adapter completes only the exact Boulder work linked to that session when exactly one active work matches and its non-empty checklist is fully checked. Paused or ambiguous work, empty checklists, stopped sessions, and events for another project/location are skipped; an explicitly configured worktree plan may live outside the project root. A project/session/work-scoped pending marker and stable synthetic ID allow the completion nudge to retry on a later successful execution; a queued marker prevents replay. Stop/disposal while asynchronous checks are pending blocks Boulder status mutation or nudge submission. The complete legacy Atlas controller (descendant/agent eligibility, final-wave approval, background-task retries, cooldown/backoff, and no-progress stall protections) is not ported; storage/admission is not an atomic multi-process transaction. |
 | `unstable-agent-babysitter` | **Not ported.** |
 | `task-resume-info` | **Not ported.** |
@@ -68,6 +68,21 @@ Status key: **Ported** means an OMO implementation is registered through the v2 
 | `native-edition-nudge` | **Intentionally omitted.** This fork's OpenCode adapter does not show the separate-edition promotion nudge. |
 
 Only the implemented hooks above honor the corresponding `disabled_hooks` values. Unknown/unsupported entries currently have no effect in the native adapter.
+
+## Native built-in commands
+
+The native command registry exposes these seven OMO built-ins: `/goal`, `/refactor`, `/ulw-execute`, `/stop-continuation`, `/remove-ai-slops`, `/handoff`, and `/hyperplan`. `disabled_commands` filters them before registration. OpenCode's own commands such as `/init` and `/review` are host commands, not part of this OMO list.
+
+| Command | Native behavior and limits |
+| --- | --- |
+| `/goal <objective>` | Stores the goal for the current session and submits one native model prompt. It requires `goal.enabled: true`; otherwise the command reports that goal work is disabled. |
+| `/goal` / `show`, `pause`, `resume`, `clear` | `show`, `pause`, and `clear` return visible session-scoped notices without starting a model turn. `resume` keeps the stored objective and usage budget, then submits one prompt. When `goal.enabled` is false, show/pause/clear remain available, while set/resume are blocked. `disabled_hooks: ["goal"]` disables automatic goal continuation; it does not remove the command. |
+| `/ulw-execute [plan] [flags]` | Selects Atlas, falling back to Sisyphus if Atlas is unavailable; switches the current session agent, prepares plan/context/Boulder information, then submits one prompt. Plan discovery reads native session history and project plan files. The legacy retry/controller behavior is not fully ported. |
+| `/stop-continuation` | Stops continuation and clears the goal only for the current session. Shared project Boulder state and todos are preserved. A visible notice is delivered without starting another model turn. |
+| `/refactor`, `/remove-ai-slops`, `/handoff` | Registered native built-in prompt templates; their invocation uses the native command API and one prompt submission. |
+| `/hyperplan` | Returns an explicit unavailable notice because the OMO Team Mode runtime is not implemented in this adapter. |
+
+Native command results use a synthetic, non-resuming session message and a tagged TUI toast. The command QA verified visible `/goal` status/pause and `/stop-continuation` notices without extra model turns; unit tests cover `/goal clear` and disabled-command/goal gates. The native registry does not discover OMO custom command files from user/project or Claude Code command directories, so this port does not claim custom-command discovery parity.
 
 ## Tools and configuration gates
 
@@ -102,7 +117,11 @@ The v2 adapter additionally creates `todowrite` and `todoread`, compatibility al
 
 ## Verification boundary
 
-The OpenCode 2.0.18 local-mock runtime fixture passed all 28 checks. It verified agent registry loading after prompt activation, root shell/edit denial with no denied side effect, native read and todo operations, context injection, the three request settings above, automatic skill visibility and model-invocation policy, team-prompt suppression, and successful native `task` delegation to `explore` with matching parent and observed output. The real PTY run loaded the TUI plugin/sidebar, rendered the status dialog, opened and canceled the empty BTW dialog, then submitted a BTW question. The new fork's `fork_session_id` matched the original session, its transcript contained both the question and mock response, the original parent transcript was unchanged, and the project session count changed from 2 to 3 with one additional mock-provider call. It did not inspect the real user database. Cleanup confirmed both the OpenCode child and mock provider stopped. This evidence does not establish full behavior parity. Unit tests cover individual registry transforms, custom-agent loading, skill policy reconciliation, MCP conflict behavior, and tool adapters, but do not replace remaining feature-specific end-to-end checks.
+The current verified merge is source commit `891882dacbb05fb5d499c9211c46deb4045ef04a`, whose second parent is upstream release `eb5c55c67877ef58e58a174b4c26d0c3e941eca0`. `bun install --ignore-scripts --frozen-lockfile`, `test:opencode2` (149 tests, 578 assertions across 27 files), `typecheck:opencode2`, `typecheck:script`, and `build:opencode2` passed. The affected ULW, prompt, delegate-category, model-core category, Senpi category, and model-profile suite passed 1,316 tests with 4,120 assertions across 115 files. The checked bundle was built from the exact source tree of that commit: `server.js` SHA-256 `f3bb68d4d64dc3b7e066587e26bab302f9ccbd8862d5d4896febf3f5b05c6ce7`; `tui.js` SHA-256 `f7326484dcfb5ac1965d7cade174e35b0cac64a4c22fac6b956ce0610f0010a6`.
+
+On that bundle, the isolated OpenCode 2.0.18 core runtime fixture passed 28/28 checks, and the native command/PTY fixture passed 18/18 checks. Command evidence confirms Atlas plan/Boulder context, session-scoped stop behavior, goal set/resume prompts, visible status/pause/stop notices, and no additional model turn for informational/status actions. Both QA drivers used evidence-local HOME/XDG roots and explicit isolated `OPENCODE_DB` files, and stopped the server and mock provider. The host's default database path was absent before and after the runs. Full evidence is under `.omo/evidence/20260927-opencode2-upstream-5.0.0/`; see `merge-verification.json`, `core/runtime.json`, `commands/runtime.json`, and `commands/commands-qa-pty.typescript`.
+
+Those 28 core checks verified agent registry loading after prompt activation, root shell/edit denial with no denied side effect, native read and todo operations, context injection, the three request settings above, automatic skill visibility and model-invocation policy, team-prompt suppression, and successful native `task` delegation to `explore` with matching parent and observed output. The real PTY run loaded the TUI plugin/sidebar, rendered the status dialog, opened and canceled the empty BTW dialog, then submitted a BTW question. The new fork's `fork_session_id` matched the original session, its transcript contained both the question and mock response, the original parent transcript was unchanged, and the project session count changed from 2 to 3 with one additional mock-provider call. It did not inspect the real user database. Cleanup confirmed both the OpenCode child and mock provider stopped. This evidence does not establish full behavior parity. Unit tests cover individual registry transforms, custom-agent loading, skill policy reconciliation, MCP conflict behavior, and tool adapters, but do not replace remaining feature-specific end-to-end checks; see the `core/runtime.json` and `tui-pty.json` captures cited above.
 
 An earlier integrated `test:opencode2` snapshot passed 109 tests with 352 assertions; the raw-prompt route audit passed 10 tests, and `typecheck:opencode2`, `typecheck:script`, and the native build also passed. Its verification snapshot is `.omo/evidence/20260927-opencode2/runtime-btw-final2/` (`QA-SUMMARY.md`, `runtime.json`, `tui-pty.json`, mock-request data, and build/test/typecheck/audit logs). It predates the lifecycle changes in this section and is not the current lifecycle test count.
 
