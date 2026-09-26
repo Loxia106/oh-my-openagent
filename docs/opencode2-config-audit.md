@@ -1,6 +1,6 @@
 # OpenCode 2 config coverage audit
 
-This is the recorded baseline audit, not a claim that every setting was functional in upstream 5.0.0 or that every gap is a new regression. See [the current compatibility table](opencode2-compatibility.md) for changes made after this snapshot. In particular, commit `360835f85` fixed the task schema conversion issue described below and verified all four task tools in OpenCode 2.0.18. Commit `564beb202` subsequently restored per-load MCP environment allowlists, with a real local MCP roundtrip on OpenCode 2.0.18. Provider selection is being addressed separately. The old Ralph controller consumes an iteration cap, but no current V1 goal-controller consumer was established; the unused V2 goal cap is a configuration limitation, not a proven V1-to-V2 regression.
+This is the recorded baseline audit, not a claim that every setting was functional in upstream 5.0.0 or that every gap is a new regression. See [the current compatibility table](opencode2-compatibility.md) for changes made after this snapshot. In particular, commit `360835f85` fixed the task schema conversion issue described below and verified all four task tools in OpenCode 2.0.18. Commit `564beb202` subsequently restored per-load MCP environment allowlists, with a real local MCP roundtrip on OpenCode 2.0.18. Commit `4925c0e39` subsequently enforced disabled providers through OMO model selection and native request guards; its local-only host QA is recorded in the compatibility document. Rows below retain the original baseline findings. The old Ralph controller consumes an iteration cap, but no current V1 goal-controller consumer was established; the unused V2 goal cap is a configuration limitation, not a proven V1-to-V2 regression.
 
 **Baseline:** `58ba6a150ed314fbeb2d53db52ab5304fc8baa5c` (`2026-09-27`). This is a source audit of the checked-in baseline, not the later safety/task fixes. All paths/lines below refer to that baseline. Unless prefixed `packages/`, paths are relative to `packages/omo-opencode/`. `setupV2` is the default plugin setup; it loads the validated config and installs only the native registry, tool, hook, and command adapters (`packages/omo-opencode/src/index.ts:6-15`, `src/v2/setup.ts:21-34`, `src/v2/config.ts:9-26`).
 
@@ -66,6 +66,8 @@ This is the recorded baseline audit, not a claim that every setting was function
 | `start_work` | Legacy migration | `validate.ts` migrates it to `ulw_execute` only when the new key is absent and warns (`config/validate.ts:135-159`). The resulting `auto_commit` value still has no V2 consumer. |
 | `default_mode` | Partial | `ultrawork` default false is applied by V2 context hooks (`config/schema/default-mode.ts:3-16`; `v2/context-hooks.ts:135-143,167-178`). `goal` default false is not read by V2; see goal row. |
 | `_migrations` | Migration metadata | Passed through common V2 config validation; startup migration is run once per directory before validation (`v2/config.ts:9-26`). Not a runtime feature switch. |
+
+The [background policy source audit](opencode2-background-policy-audit.md) expands the actual defaults and route-specific behavior of `background_task`; several schema comments differ from the effective V1 constants. Its proposed implementation is not a completed-feature claim.
 
 ## Follow-up order suggested by source evidence
 
