@@ -36,10 +36,15 @@ function record(value: unknown): Record<string, unknown> | undefined {
 function ref(value: unknown): ModelRef | undefined {
 	const candidate = record(value)
 	if (!candidate || typeof candidate.providerID !== "string" || typeof candidate.id !== "string") return undefined
+	// OpenCode exposes an absent stored variant as "default" (session/info.ts);
+	// its resolver normalizes that sentinel to undefined (model-resolver.ts:141).
+	const variant = typeof candidate.variant === "string" && candidate.variant !== "default"
+		? candidate.variant
+		: undefined
 	return {
 		providerID: candidate.providerID,
 		id: candidate.id,
-		...(typeof candidate.variant === "string" && candidate.variant ? { variant: candidate.variant } : {}),
+		...(variant ? { variant } : {}),
 	}
 }
 

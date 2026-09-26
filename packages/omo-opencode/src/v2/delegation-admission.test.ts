@@ -105,6 +105,55 @@ describe("native V2 delegation model resolution", () => {
 		expect(explicit.model).toEqual({ providerID: "override-provider", id: "override-model", variant: "high" })
 	})
 
+	test("normalizes the native default sentinel on inherited parent and resumed models", async () => {
+		const h = harness({
+			agents: [{ id: "target", mode: "subagent" }],
+			sessions: {
+				"ses-parent": {
+					id: "ses-parent", agent: "parent",
+					model: { providerID: "stored-provider", id: "stored-model", variant: "default" },
+					location: { directory: "/repo" },
+				},
+				"ses-resume-default": {
+					id: "ses-resume-default", parentID: "ses-parent", agent: "target",
+					model: { providerID: "stored-provider", id: "stored-model", variant: "default" },
+					location: { directory: "/repo" },
+				},
+			},
+		})
+
+		const inherited = await resolveV2SubagentModel(h.ctx, { agent: "target" }, "ses-parent")
+		expect(inherited.model).toEqual({ providerID: "stored-provider", id: "stored-model" })
+
+		const resumed = await resolveV2SubagentModel(h.ctx, { agent: "target", sessionID: "ses-resume-default" }, "ses-parent")
+		expect(resumed.model).toEqual({ providerID: "stored-provider", id: "stored-model" })
+	})
+
+	test("preserves valid inherited variants and rejects unavailable inherited or explicit default variants", async () => {
+		const available = [{ providerID: "stored-provider", id: "stored-model", enabled: true, variants: [{ id: "high" }] }]
+		const valid = harness({
+			agents: [{ id: "target", mode: "subagent", model: { providerID: "stored-provider", id: "stored-model", variant: "high" } }],
+			models: available,
+		})
+		const inherited = await resolveV2SubagentModel(valid.ctx, { agent: "target" }, "ses-parent")
+		expect(inherited.model).toEqual({ providerID: "stored-provider", id: "stored-model", variant: "high" })
+
+		const invalid = harness({
+			agents: [{ id: "target", mode: "subagent", model: { providerID: "stored-provider", id: "stored-model", variant: "missing" } }],
+			models: available,
+		})
+		await expect(resolveV2SubagentModel(invalid.ctx, { agent: "target" }, "ses-parent"))
+			.rejects.toThrow('Variant "missing" is unavailable')
+
+		const explicitDefault = harness({
+			models: [{ providerID: "override-provider", id: "override-model", enabled: true, variants: [{ id: "high" }] }],
+		})
+		await expect(resolveV2SubagentModel(explicitDefault.ctx, {
+			agent: "target", model: "override-provider/override-model#default",
+		}, "ses-parent"))
+			.rejects.toThrow('Variant "default" is unavailable')
+	})
+
 	test("validates requested agent, direct-child ownership, enabled model, and variant", async () => {
 		const h = harness({ sessions: {
 			"ses-foreign": { id: "ses-foreign", parentID: "ses-other", agent: "target", location: { directory: "/repo" } },
