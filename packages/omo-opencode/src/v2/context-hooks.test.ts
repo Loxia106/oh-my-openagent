@@ -5,7 +5,7 @@ import { join } from "node:path"
 import type { Plugin } from "@opencode/plugin"
 import type { SessionContext, SessionPrompt } from "@opencode/plugin/promise/session"
 import type { OhMyOpenCodeConfig } from "../config"
-import { getUltraworkMessage, TEAM_MESSAGE } from "../hooks/keyword-detector/constants"
+import { getUltraworkMessage, HYPERPLAN_MESSAGE, TEAM_MESSAGE } from "../hooks/keyword-detector/constants"
 import { registerV2ContextHooks } from "./context-hooks"
 import { registerV2Hooks } from "./hooks"
 
@@ -100,6 +100,44 @@ describe("native v2 context hooks", () => {
 		input.messages = [{ role: "user", content: "Use team-mode for this task." }] as never
 		await callbacks.get("context")?.(input)
 		expect(input.system.map((part) => part.text)).not.toContain(TEAM_MESSAGE)
+		await cleanup()
+	})
+
+	test("explains that Hyperplan orchestration is unavailable instead of injecting team instructions", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "omo-v2-context-test-"))
+		roots.push(directory)
+		const { ctx, callbacks } = mockContext(directory)
+		const cleanup = await registerV2ContextHooks(ctx, {} as OhMyOpenCodeConfig)
+
+		const input = contextInput()
+		input.messages = [{ role: "user", content: "Use hyperplan for this task." }] as never
+		await callbacks.get("context")?.(input)
+		const system = input.system.map((part) => part.text).join("\n")
+
+		expect(system).toContain("Hyperplan")
+		expect(system).toContain("unavailable")
+		expect(system).toContain("Do not simulate")
+		expect(system).not.toContain(HYPERPLAN_MESSAGE)
+		expect(system).not.toContain("team_create")
+		await cleanup()
+	})
+
+	test("preserves explicit ultrawork while reporting unsupported Hyperplan in the combined mode", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "omo-v2-context-test-"))
+		roots.push(directory)
+		const { ctx, callbacks } = mockContext(directory)
+		const cleanup = await registerV2ContextHooks(ctx, {} as OhMyOpenCodeConfig)
+
+		const input = contextInput()
+		input.messages = [{ role: "user", content: "Use hyperplan ultrawork for this task." }] as never
+		await callbacks.get("context")?.(input)
+		const system = input.system.map((part) => part.text).join("\n")
+
+		expect(system).toContain("Hyperplan")
+		expect(system).toContain("unavailable")
+		expect(system).toContain(getUltraworkMessage("sisyphus", "openai/mock"))
+		expect(system).not.toContain(HYPERPLAN_MESSAGE)
+		expect(system).not.toContain("<hyperplan-ultrawork-mode>")
 		await cleanup()
 	})
 

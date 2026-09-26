@@ -215,6 +215,31 @@ function nativeSettings(config: AgentConfig): Record<string, unknown> {
   return settings
 }
 
+const V2_UNSUPPORTED_TEAM_PROMPT_SKILLS = new Set(["security-research", "security-review", "team-mode"])
+
+function disablesModelInvocation(skill: Pick<LoadedSkill, "disableModelInvocation" | "metadata">): boolean {
+  const autoinvoke: unknown = skill.metadata?.["opencode/autoinvoke"]
+  return skill.disableModelInvocation === true || autoinvoke === false ||
+    (typeof autoinvoke === "string" && autoinvoke.trim().toLowerCase() === "false")
+}
+
+/**
+ * Agent prompts are also used by the legacy skill picker, so keep its shared
+ * behavior unchanged and apply native OpenCode's invocation policy here.
+ * Provenance matters: custom plugin/user skills may intentionally share a
+ * name with a builtin that this runtime cannot support.
+ */
+function nativePromptSkills(available: AvailableSkill[], loadedSkills: readonly LoadedSkill[]): AvailableSkill[] {
+  const winners = new Map(loadedSkills.map((skill) => [skill.name.toLowerCase(), skill]))
+  return available.filter((skill) => {
+    const name = skill.name.toLowerCase()
+    const winner = winners.get(name)
+    if (winner && disablesModelInvocation(winner)) return false
+    if (!V2_UNSUPPORTED_TEAM_PROMPT_SKILLS.has(name)) return true
+    return winner !== undefined && winner.scope !== "builtin"
+  })
+}
+
 function catalogPrompts(input: {
   config: OhMyOpenCodeConfig
   catalog: V2ModelCatalogSnapshot
@@ -228,12 +253,13 @@ function catalogPrompts(input: {
     description: category.description ?? CATEGORY_DESCRIPTIONS[name] ?? "General tasks",
   }))
   const disabledSkills = collectDisabledSkillAliases(config)
-  const availableSkills = buildAvailableSkills(
-    [...loadedSkills],
+  const modelInvocableSkills = loadedSkills.filter((skill) => !disablesModelInvocation(skill))
+  const availableSkills = nativePromptSkills(buildAvailableSkills(
+    [...modelInvocableSkills],
     config.browser_automation_engine?.provider,
     disabledSkills,
     config.team_mode?.enabled,
-  )
+  ), loadedSkills)
   const resolutions = new Map<string, ReturnType<typeof resolveV2AgentModel>>()
   const promptModels = new Map<string, string>()
   for (const name of BUILTIN_AGENT_NAMES) {

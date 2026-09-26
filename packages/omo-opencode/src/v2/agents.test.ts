@@ -3,10 +3,41 @@ import type { AgentConfig } from "@opencode-ai/sdk"
 import type { AgentEditor } from "@opencode/plugin/promise/agent"
 import type { Plugin } from "@opencode/plugin"
 import type { OhMyOpenCodeConfig } from "../config"
+import type { LoadedSkill } from "../features/opencode-skill-loader/types"
 import { createSisyphusAgent } from "../agents/sisyphus-agent-factory"
 import { createSisyphusJuniorAgentWithOverrides } from "../agents/sisyphus-junior"
 import { buildV2AgentConfigs, registerV2Agents, toV2PermissionRules } from "./agents"
 import { V2ModelCatalog } from "./model-resolution"
+
+function loadedSkill(
+  name: string,
+  scope: LoadedSkill["scope"],
+  options: Partial<LoadedSkill> = {},
+): LoadedSkill {
+  return {
+    name,
+    scope,
+    definition: { name, description: `Description for ${name}`, template: `Instructions for ${name}` },
+    ...options,
+  }
+}
+
+function sisyphusPrompt(loadedSkills: readonly LoadedSkill[]): string {
+  const configs = buildV2AgentConfigs({
+    config: {} as OhMyOpenCodeConfig,
+    catalog: new V2ModelCatalog().snapshot,
+    loadedSkills,
+    directory: process.cwd(),
+  })
+  return configs.sisyphus?.prompt ?? ""
+}
+
+function availableSkillsSection(prompt: string): string {
+  const start = prompt.indexOf("#### Available Skills")
+  if (start < 0) return ""
+  const end = prompt.indexOf("\n\n---", start)
+  return prompt.slice(start, end < 0 ? undefined : end)
+}
 
 describe("native v2 agents", () => {
   test("registers the complete built-in set, including Prometheus, without choosing unavailable models", () => {
@@ -38,6 +69,38 @@ describe("native v2 agents", () => {
       resource: "*",
       effect: "allow",
     })
+  })
+
+  test("keeps model-disabled skills and unsupported team builtins out of native dynamic agent prompts", () => {
+    const prompt = sisyphusPrompt([
+      loadedSkill("qa-manual-only", "project", { disableModelInvocation: true }),
+      loadedSkill("metadata-manual-only", "shared", { metadata: { "opencode/autoinvoke": "false" } }),
+      loadedSkill("qa-visible", "project"),
+    ])
+    const skills = availableSkillsSection(prompt)
+
+    expect(skills).toContain("qa-visible")
+    expect(skills).toContain("frontend")
+    expect(skills).not.toContain("qa-manual-only")
+    expect(skills).not.toContain("metadata-manual-only")
+    expect(skills).not.toContain("security-research")
+    expect(skills).not.toContain("security-review")
+  })
+
+  test("preserves nonbuiltin custom skills that share names with unsupported team builtins", () => {
+    for (const scope of ["project", "shared"] as const) {
+      const prompt = sisyphusPrompt([loadedSkill("security-research", scope)])
+      expect(prompt).toContain("security-research")
+      expect(prompt).not.toContain("security-review")
+    }
+  })
+
+  test("manual custom overrides suppress same-named builtin entries re-added by prompt factories", () => {
+    const prompt = sisyphusPrompt([
+      loadedSkill("frontend", "project", { disableModelInvocation: true }),
+    ])
+
+    expect(availableSkillsSection(prompt)).not.toContain("frontend")
   })
 
   test("translates action aliases in authored order and restricts irreducible alias conflicts", () => {

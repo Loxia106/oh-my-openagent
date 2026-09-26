@@ -6,9 +6,7 @@ import { detectKeywordsWithType } from "../hooks/keyword-detector/detector"
 import {
 	isNonOmoAgent,
 	isPlannerAgent,
-	getHyperplanUltraworkMessage,
 	getUltraworkMessage,
-	HYPERPLAN_MESSAGE,
 	TEAM_MESSAGE,
 } from "../hooks/keyword-detector/constants"
 import { isSystemDirective, removeSystemReminders } from "../shared/system-directive"
@@ -17,6 +15,10 @@ import { log } from "../shared/logger"
 const SESSION_STATE_LIMIT = 256
 const STOP_CONTINUATION_COMMAND = /^\s*\/stop-continuation(?:\s|$)/i
 const SLASH_COMMAND = /^\s*\/[a-zA-Z][\w-]*(?:\s|$)/
+const HYPERPLAN_UNAVAILABLE_MESSAGE = `<native-mode-compatibility>
+The requested Hyperplan adversarial team workflow is unavailable in this OpenCode 2 runtime because the OMO team manager is not available here. Do not load Hyperplan team instructions. Do not simulate team rounds or claim that team orchestration ran. Explain this limitation and offer supported alternatives; do not choose a substitute workflow without the user's direction.
+If Ultrawork was also explicitly requested, continue its independent protocol while making clear that the Hyperplan team portion is unavailable.
+</native-mode-compatibility>`
 
 type ContextMode = {
 	ultrawork: boolean
@@ -77,11 +79,8 @@ function keywordModes(text: string, agent: string, model: string, config: OhMyOp
 
 function getModePrompt(mode: ContextMode, agent: string, model: string, teamModeAvailable: boolean): string[] {
 	const prompts: string[] = []
-	if (mode.hyperplan && mode.ultrawork) prompts.push(getHyperplanUltraworkMessage(agent, model))
-	else {
-		if (mode.hyperplan) prompts.push(HYPERPLAN_MESSAGE)
-		if (mode.ultrawork) prompts.push(getUltraworkMessage(agent, model))
-	}
+	if (mode.hyperplan) prompts.push(HYPERPLAN_UNAVAILABLE_MESSAGE)
+	if (mode.ultrawork) prompts.push(getUltraworkMessage(agent, model))
 	if (mode.team && teamModeAvailable) prompts.push(TEAM_MESSAGE)
 	return prompts
 }
