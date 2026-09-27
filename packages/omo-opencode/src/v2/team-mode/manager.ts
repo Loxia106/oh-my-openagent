@@ -60,6 +60,11 @@ type RunControl = {
 	pumpAgain: boolean
 }
 
+/** Grace before OMO resumes a member whose turn a host restart orphaned (unmanaged servers do not resume it). */
+const RECOVERY_RESUME_GRACE_MS = 5_000
+const BOOT_CATALOG_GRACE_MS = 30_000
+const RECOVERY_RESUME_TEXT = "The server restarted while you were working. Continue from where you left off without repeating completed work."
+
 const createInput = z.object({
 	teamName: z.string().min(1).optional(),
 	inline_spec: z.union([z.string(), z.record(z.string(), z.unknown())]).optional(),
@@ -294,6 +299,9 @@ export function createV2TeamManager(ctx: Plugin.Context, omoConfig: OhMyOpenCode
 	let disposed = false
 	let eventLoop: Promise<void> | undefined
 	const wallClockTimers = new Map<string, ReturnType<typeof setTimeout>>()
+	const recoveryTimers: Array<ReturnType<typeof setTimeout>> = []
+	const startedSinceBoot = new Set<string>()
+	let bootAt = 0
 	const registrations: Array<Awaited<ReturnType<typeof ctx.session.hook>>> = []
 	const actionQueues = new Map<string, Promise<void>>()
 
@@ -459,6 +467,12 @@ export function createV2TeamManager(ctx: Plugin.Context, omoConfig: OhMyOpenCode
 			await ctx.session.wait({ sessionID }, { signal: eventController.signal })
 			if (disposed || eventController.signal.aborted) return
 			const session = await ctx.session.get({ sessionID })
+			if (recovery && session.outcome === undefined) {
+				// An unmanaged host leaves an orphaned turn without an outcome; keep the slot and let the
+				// recovery resume (or a host-resumed execution) settle it against this idle baseline.
+				control.idleBaselines.set(sessionID, sessionIdleTime(session) ?? 0)
+				return
+			}
 			if (!recovery && (control.idleBaselines.get(sessionID) !== baselineIdle ||
 				!isNewerTeamExecutionIdle(baselineIdle, session.time.idle))) return
 			await setMemberStatus(runId, memberName, terminalMemberStatus(session.outcome))
@@ -477,6 +491,18 @@ export function createV2TeamManager(ctx: Plugin.Context, omoConfig: OhMyOpenCode
 		return pending
 	}
 
+	/** Provider catalogs can still be loading right after boot; recovered launches wait for them briefly. */
+	async function resolveMemberModel(route: ReturnType<typeof memberAgent>, leadSessionID: string, control: RunControl, signal?: AbortSignal) {
+		while (true) {
+			try {
+				return await resolveV2ManagedAgentModelChoice(ctx, omoConfig, route.agentID, leadSessionID, route.categoryName)
+			} catch (error) {
+				if (Date.now() - bootAt >= BOOT_CATALOG_GRACE_MS || disposed || control.closing || signal?.aborted) throw error
+				await new Promise((resolve) => setTimeout(resolve, 1_000))
+			}
+		}
+	}
+
 	async function launchMember(record: V2TeamMembershipRecord, member: Member, signal?: AbortSignal): Promise<string> {
 		if (!dependencies) throw new Error("Team manager has not started.")
 		const control = controlFor(record.teamRunId)
@@ -488,7 +514,7 @@ export function createV2TeamManager(ctx: Plugin.Context, omoConfig: OhMyOpenCode
 		try {
 			const route = memberAgent(member)
 			await validateMemberLaunch(ctx, omoConfig, record.leadSessionID, member)
-			const choice = await resolveV2ManagedAgentModelChoice(ctx, omoConfig, route.agentID, record.leadSessionID, route.categoryName)
+			const choice = await resolveMemberModel(route, record.leadSessionID, control, signal)
 			ticket = await dependencies.admission.acquire({
 				parentSessionID: record.leadSessionID,
 				model: { providerID: choice.model.providerID, id: choice.model.id },
@@ -758,6 +784,7 @@ export function createV2TeamManager(ctx: Plugin.Context, omoConfig: OhMyOpenCode
 		if (!found || found.member.role === "lead") return
 		const control = controlFor(found.record.teamRunId)
 		if (event.type === "session.execution.started") {
+			startedSinceBoot.add(sessionID)
 			control.executionStarted.add(sessionID)
 			control.active.add(sessionID)
 			await setMemberStatus(found.record.teamRunId, found.member.name, "running")
@@ -1072,6 +1099,7 @@ export function createV2TeamManager(ctx: Plugin.Context, omoConfig: OhMyOpenCode
 				await membership.incrementTurnCount(event.sessionID, teamConfig.max_member_turns)
 			}))
 			started = true
+			bootAt = Date.now()
 			eventLoop = watchEvents()
 			const records = await membership.listForLocation()
 			for (const record of records) {
@@ -1086,6 +1114,16 @@ export function createV2TeamManager(ctx: Plugin.Context, omoConfig: OhMyOpenCode
 						control.active.add(item.sessionId)
 						control.executionStarted.add(item.sessionId)
 						void waitForIdle(record.teamRunId, item.name, item.sessionId, undefined, true)
+						const sessionID = item.sessionId
+						const memberName = item.name
+						// A managed host resumes orphaned turns at boot; an unmanaged `serve` does not, and the
+						// member would hold its slot forever. Resume it once if no execution starts meanwhile.
+						recoveryTimers.push(setTimeout(() => {
+							if (disposed || control.closing || startedSinceBoot.has(sessionID) || !control.active.has(sessionID)) return
+							log("[v2 team] resuming a member whose turn was orphaned by a restart", { runId: record.teamRunId, memberName, sessionID })
+							void ctx.session.prompt({ sessionID: sessionID as Parameters<Plugin.Context["session"]["prompt"]>[0]["sessionID"], text: RECOVERY_RESUME_TEXT, delivery: "queue" })
+								.catch((error) => log("[v2 team] orphaned member resume failed", { sessionID, error: error instanceof Error ? error.message : String(error) }))
+						}, RECOVERY_RESUME_GRACE_MS))
 					}
 					if (item.sessionId && item.status !== "errored" && item.status !== "completed") {
 						const unread = await listUnreadMessages(record.teamRunId, item.name, teamConfig).catch((error) => {
@@ -1111,6 +1149,8 @@ export function createV2TeamManager(ctx: Plugin.Context, omoConfig: OhMyOpenCode
 				control.controller.abort(new Error("Team manager disposed."))
 			}
 			eventController.abort(new Error("Team manager disposed."))
+			for (const timer of recoveryTimers) clearTimeout(timer)
+			recoveryTimers.length = 0
 			for (const timer of wallClockTimers.values()) clearTimeout(timer)
 			wallClockTimers.clear()
 			for (const registration of registrations.reverse()) {

@@ -479,3 +479,139 @@ describe("native Team mailbox generation safety", () => {
 		}
 	})
 })
+
+describe("native Team process-restart recovery", () => {
+	test("an orphaned member keeps its slot, is resumed once, and the queued member launches after it settles", async () => {
+		const root = await mkdtemp(join(tmpdir(), "omo-v2-team-restart-"))
+		const projectDirectory = join(root, "project")
+		await mkdir(projectDirectory)
+		const runtimeRoot = join(root, "teams")
+		const leadID = "ses-restart-lead"
+		const sessions = new Map<string, { id: string; time: { created: number; updated: number; idle?: number }; outcome?: string; [key: string]: unknown }>()
+		sessions.set(leadID, {
+			id: leadID, projectID: "project-restart", agent: "atlas", model: { providerID: "host", id: "model" },
+			location: { directory: projectDirectory }, parentID: undefined, time: { created: 1, updated: 1, idle: 100 }, outcome: "succeeded",
+		})
+		const prompts: Array<{ sessionID: string; text: string }> = []
+		const eventQueue: unknown[] = []
+		const eventWaiters: Array<() => void> = []
+		let catalogReady = true
+		let created = 0
+		const publish = (type: string, sessionID: string) => {
+			eventQueue.push({ type, data: { sessionID }, location: { directory: projectDirectory } })
+			for (const wake of eventWaiters.splice(0)) wake()
+		}
+		const ctx = unsafeTestValue<Plugin.Context>({
+			location: { directory: projectDirectory, project: { id: "project-restart", canonical: projectDirectory }, workspaceID: "workspace-restart" },
+			storage: { get: async () => undefined, set: async () => undefined, remove: async () => undefined },
+			agent: { list: async () => ({ data: [
+				{ id: "atlas", mode: "primary", model: { providerID: "host", id: "model" } },
+				{ id: "sisyphus", mode: "primary", model: { providerID: "host", id: "model" } },
+			] }) },
+			model: {
+				list: async () => ({ data: catalogReady ? [{ providerID: "host", id: "model", enabled: true, variants: [] }] : [] }),
+				default: async () => ({ data: catalogReady ? { providerID: "host", id: "model" } : undefined }),
+			},
+			session: {
+				get: async ({ sessionID }: { sessionID: string }) => sessions.get(sessionID)!,
+				create: async () => {
+					created += 1
+					const session = {
+						id: `ses-restart-member-${created}`, projectID: "project-restart", agent: "sisyphus", model: { providerID: "host", id: "model" },
+						location: { directory: projectDirectory }, parentID: undefined, time: { created: 1, updated: 1 }, outcome: undefined,
+					}
+					sessions.set(session.id, session)
+					return session
+				},
+				prompt: async (input: { sessionID: string; text: string }) => { prompts.push({ sessionID: input.sessionID, text: input.text }) },
+				synthetic: async () => undefined,
+				wait: async () => undefined,
+				interrupt: async () => undefined,
+				hook: async () => ({ dispose: async () => undefined }),
+			},
+			event: {
+				subscribe: async function* ({ signal }: { signal: AbortSignal }) {
+					while (!signal.aborted) {
+						if (eventQueue.length === 0) {
+							await new Promise<void>((resolve) => {
+								const done = () => { signal.removeEventListener("abort", done); resolve() }
+								eventWaiters.push(done)
+								signal.addEventListener("abort", done, { once: true })
+							})
+							if (signal.aborted) return
+						}
+						const next = eventQueue.shift()
+						if (next !== undefined) yield next
+					}
+				},
+			},
+		})
+		const config = unsafeTestValue<OhMyOpenCodeConfig>({ team_mode: { enabled: true, base_dir: runtimeRoot, max_parallel_members: 1 } })
+		const tools = new Map<string, { execute: (input: unknown, context: unknown) => Promise<{ content?: string }> }>()
+		const toolEditor = unsafeTestValue<ToolEditor>({
+			add: (tool: { name: string; execute: (input: unknown, context: unknown) => Promise<{ content?: string }> }) => tools.set(tool.name, tool),
+			remove: () => undefined,
+			get: () => undefined,
+		})
+		const dependencies = {
+			admission: { acquire: async () => ({ beginCreate: async () => undefined, bind: async () => undefined, rollback: async () => true }) } as never,
+			runs: { get: async () => undefined, recordLaunch: async () => undefined, children: async () => [] } as never,
+		}
+		const waitUntil = async (predicate: () => boolean | Promise<boolean>, label: string, attempts = 400) => {
+			for (let attempt = 0; attempt < attempts; attempt += 1) {
+				if (await predicate()) return
+				await new Promise((resolve) => setTimeout(resolve, 25))
+			}
+			throw new Error(`Timed out waiting for ${label}.`)
+		}
+		const statuses = async (teamRunId: string) => {
+			const result = await tools.get("team_status")!.execute({ teamRunId }, { sessionID: leadID, signal: new AbortController().signal, id: "status" })
+			const parsed = JSON.parse(result.content ?? "{}") as { runtimeState: { members: Array<{ name: string; status: string }> } }
+			return Object.fromEntries(parsed.runtimeState.members.map((member) => [member.name, member.status]))
+		}
+		const first = createV2TeamManager(ctx, config)
+		let second: ReturnType<typeof createV2TeamManager> | undefined
+		try {
+			await first.start(dependencies)
+			first.createTools(toolEditor)
+			const result = await tools.get("team_create")!.execute({ inline_spec: {
+				version: 1, name: "restart-team", leadAgentId: "lead",
+				members: [
+					{ kind: "subagent_type", name: "lead", subagent_type: "atlas" },
+					{ kind: "subagent_type", name: "alpha", subagent_type: "sisyphus" },
+					{ kind: "subagent_type", name: "beta", subagent_type: "sisyphus" },
+				],
+			} }, { sessionID: leadID, signal: new AbortController().signal, id: "create" })
+			const teamRunId = JSON.parse(result.content ?? "{}").teamRunId as string
+			await waitUntil(() => prompts.length === 1, "alpha launch")
+			const alphaID = prompts[0]!.sessionID
+			publish("session.execution.started", alphaID)
+			await waitUntil(async () => (await statuses(teamRunId)).alpha === "running", "alpha running")
+			// The process dies mid-turn: alpha never reaches an outcome and beta is still queued.
+			await first.dispose()
+
+			catalogReady = false
+			setTimeout(() => { catalogReady = true }, 300)
+			second = createV2TeamManager(ctx, config)
+			await second.start(dependencies)
+			second.createTools(toolEditor)
+			await new Promise((resolve) => setTimeout(resolve, 200))
+			expect(await statuses(teamRunId)).toMatchObject({ alpha: "running", beta: "pending" })
+			await waitUntil(() => prompts.some((prompt) => prompt.sessionID === alphaID && prompt.text.includes("The server restarted")), "orphan resume", 400)
+			expect(prompts.filter((prompt) => prompt.text.includes("The server restarted"))).toHaveLength(1)
+			expect(prompts.filter((prompt) => prompt.sessionID !== alphaID)).toHaveLength(0)
+
+			publish("session.execution.started", alphaID)
+			const alpha = sessions.get(alphaID)!
+			alpha.time.idle = 200
+			alpha.outcome = "succeeded"
+			publish("session.execution.succeeded", alphaID)
+			await waitUntil(() => prompts.some((prompt) => prompt.sessionID !== alphaID), "beta launch after alpha settles")
+			expect(await statuses(teamRunId)).toMatchObject({ alpha: "idle", beta: "running" })
+		} finally {
+			await first.dispose()
+			await second?.dispose()
+			await rm(root, { recursive: true, force: true })
+		}
+	}, 30_000)
+})
