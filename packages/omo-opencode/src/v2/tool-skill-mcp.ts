@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto"
 import { isDeepStrictEqual } from "node:util"
+import { SkillMcpManager } from "@oh-my-opencode/mcp-client-core/skill-mcp-manager/manager"
 import type { Plugin } from "@opencode/plugin"
 import { Error as ToolError } from "@opencode/plugin/promise/tool"
 import type { ToolContext, ToolEditor } from "@opencode/plugin/promise/tool"
@@ -21,10 +23,10 @@ const skillMcpInput = z.object({
 	mcp_name: z.string().describe("MCP server name declared by a loaded skill"),
 	tool_name: z.string().optional().describe("MCP tool to call"),
 	resource_name: z.string().optional().describe("Exact MCP resource URI to read"),
-	prompt_name: z.string().optional().describe("MCP prompt name (unsupported by the native v2 plugin API)"),
+	prompt_name: z.string().optional().describe("MCP prompt to get"),
 	arguments: z.union([z.string(), z.record(z.string(), z.unknown())]).optional(),
 	grep: z.string().optional().describe("Regex filter for returned text"),
-	cdp_url: z.string().optional().describe("Unsupported by the native v2 MCP server API"),
+	cdp_url: z.string().optional().describe("CDP endpoint URL to connect Playwright to an existing browser (e.g. http://localhost:9222). Creates a separate MCP instance per unique URL."),
 })
 
 type SkillServer = {
@@ -96,6 +98,40 @@ function nativeNamespace(serverName: string): string {
 	return serverName.replace(/[^a-zA-Z0-9_-]/g, "_")
 }
 
+/** Legacy per-URL instances: a local server gets `--cdp-endpoint <url>` under a derived native name. */
+export function cdpServerName(serverName: string, cdpUrl: string): string {
+	return `${serverName}-cdp-${createHash("sha256").update(cdpUrl).digest("hex").slice(0, 8)}`
+}
+
+export function validateCdpUrl(value: string): string {
+	let url: URL
+	try {
+		url = new URL(value)
+	} catch {
+		throw new Error(`cdp_url must be an absolute URL, received "${value}".`)
+	}
+	if (!["http:", "https:", "ws:", "wss:"].includes(url.protocol)) {
+		throw new Error(`cdp_url must use http, https, ws or wss; received "${url.protocol}".`)
+	}
+	return value
+}
+
+function withCdpEndpoint(config: McpSchema.ServerConfig, cdpUrl: string): McpSchema.ServerConfig | undefined {
+	const record = config as unknown as { type?: string; command?: string[] }
+	if (record.type !== "local" || !Array.isArray(record.command)) return undefined
+	return { ...config, command: [...record.command, "--cdp-endpoint", cdpUrl] } as McpSchema.ServerConfig
+}
+
+type PermissionRule = { action: string; resource: string; effect: "allow" | "ask" | "deny" }
+
+function wildcardMatches(value: string, pattern: string): boolean {
+	// Keep this aligned with OpenCode's Wildcard.match implementation.
+	const normalized = value.replaceAll("\\", "/")
+	let escaped = pattern.replaceAll("\\", "/").replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")
+	if (escaped.endsWith(" .*")) escaped = escaped.slice(0, -3) + "( .*)?"
+	return new RegExp(`^${escaped}$`, process.platform === "win32" ? "si" : "s").test(normalized)
+}
+
 function isNativeSkillToolId(toolID: string, serverNames: Iterable<string>): boolean {
 	for (const serverName of serverNames) {
 		if (toolID.startsWith(`${nativeNamespace(serverName)}_`)) return true
@@ -151,6 +187,38 @@ async function currentServers(ctx: Plugin.Context): Promise<readonly { name: str
 	return response.data as readonly { name: string; status: { status: string; error?: string } }[]
 }
 
+async function baseActionEffect(
+	ctx: Plugin.Context,
+	sessionID: string,
+	agentID: string | undefined,
+	action: string,
+	resources: readonly string[],
+): Promise<"allow" | "ask" | "deny" | undefined> {
+	const agents = (await ctx.agent.list()).data as Array<{ id: string; permissions?: PermissionRule[] }>
+	let result: "allow" | "ask" | "deny" | undefined
+	let current: { id: string; parentID?: string; agent?: string; permissions?: unknown } | undefined = await ctx.session.get({ sessionID })
+	let depth = 0
+	const seen = new Set<string>()
+	while (current && depth < 32 && !seen.has(current.id)) {
+		seen.add(current.id)
+		const owner = depth === 0 && agentID ? agentID : current.agent
+		const rules = [
+			...((agents.find((agent) => agent.id === owner)?.permissions ?? []) as PermissionRule[]),
+			...((Array.isArray(current.permissions) ? current.permissions : []) as PermissionRule[]),
+		]
+		for (const resource of resources.length > 0 ? resources : ["*"]) {
+			const matched = rules.findLast((rule) => wildcardMatches(action, rule.action) && wildcardMatches(resource, rule.resource))
+			if (matched?.effect === "deny") return "deny"
+			if (matched?.effect === "ask") result = "ask"
+			else if (matched?.effect === "allow" && result === undefined) result = "allow"
+		}
+		if (!current.parentID) break
+		current = await ctx.session.get({ sessionID: current.parentID })
+		depth++
+	}
+	return result
+}
+
 /** Register the legacy skill_mcp surface using native MCP transforms and executors. */
 export async function registerV2SkillMcpRuntime(
 	ctx: Plugin.Context,
@@ -174,6 +242,9 @@ export async function registerV2SkillMcpRuntime(
 	let cleanupPromise: Promise<void> | undefined
 	const toolContextRegistration: Array<{ dispose: () => Promise<void> }> = []
 	let mcpRegistration: { dispose: () => Promise<void> } | undefined
+	/** Derived cdp server name -> base skill server name, for permission evaluation. */
+	const derivedServers = new Map<string, string>()
+	let promptManager: SkillMcpManager | undefined
 
 	const serializeReload = <T>(operation: () => Promise<T>): Promise<T> => {
 		const run = reloadQueue.then(operation, operation)
@@ -201,6 +272,31 @@ export async function registerV2SkillMcpRuntime(
 				throw new ToolError({ message: "Skill MCP tools can only be called through skill_mcp." })
 			}
 		}))
+		// A per-URL instance must stay subject to the rules written for its base server
+		// (for example an exact `playwright_browser_click: deny`).
+		toolContextRegistration.push(await ctx.permission.hook("evaluate", async (event) => {
+			if (event.effect === "deny" || derivedServers.size === 0) return
+			for (const [derived, base] of derivedServers) {
+				const prefix = `${nativeNamespace(derived)}_`
+				if (!event.action.startsWith(prefix)) continue
+				const baseAction = `${nativeNamespace(base)}_${event.action.slice(prefix.length)}`
+				try {
+					const effect = await baseActionEffect(ctx, String(event.sessionID), event.agent ? String(event.agent) : undefined, baseAction, event.resources)
+					if (effect === "deny") {
+						event.effect = "deny"
+						event.message = `Denied by the permission policy for ${baseAction}.`
+						log("[v2 skill_mcp] Derived cdp MCP action denied by the base server permission.", { action: event.action, baseAction })
+					} else if (effect === "ask" && event.effect === "allow") {
+						event.effect = "ask"
+						event.message = `Requires approval under the permission policy for ${baseAction}.`
+					}
+				} catch (error) {
+					if (event.effect === "allow") event.effect = "ask"
+					event.message = `Could not verify the base MCP permission for ${baseAction}: ${error instanceof Error ? error.message : String(error)}`
+				}
+				return
+			}
+		}))
 	} catch (error) {
 		await Promise.allSettled([
 			...toolContextRegistration.map((registration) => registration.dispose()),
@@ -209,8 +305,8 @@ export async function registerV2SkillMcpRuntime(
 		throw error
 	}
 
-	const ensureServer = async (skillServer: SkillServer, signal: AbortSignal): Promise<string> => {
-		const key = logicalServerKey(skillServer)
+	const ensureServer = async (skillServer: SkillServer, signal: AbortSignal, cdpUrl?: string): Promise<string> => {
+		const key = cdpUrl ? `${logicalServerKey(skillServer)}\0cdp=${cdpUrl}` : logicalServerKey(skillServer)
 		const loaded = loadedServerNames.get(key)
 		if (loaded) return loaded
 		const pending = pendingServerLoads.get(key)
@@ -222,8 +318,15 @@ export async function registerV2SkillMcpRuntime(
 			if (alreadyLoaded) return alreadyLoaded
 			if (signal.aborted) throw new Error("skill_mcp call was cancelled before the MCP server started")
 
-			const nativeName = skillServer.name
-			const nativeConfig = toNativeSkillServerConfig(skillServer.name, skillServer.config)
+			const baseConfig = toNativeSkillServerConfig(skillServer.name, skillServer.config)
+			const cdpConfig = cdpUrl ? withCdpEndpoint(baseConfig, cdpUrl) : undefined
+			if (cdpUrl && !cdpConfig) {
+				// Legacy remote clients ignored the injected args; the base server is equivalent.
+				log("[v2 skill_mcp] cdp_url applies only to local MCP servers; using the base server.", { server: skillServer.name })
+			}
+			const nativeName = cdpConfig ? cdpServerName(skillServer.name, cdpUrl!) : skillServer.name
+			const nativeConfig = cdpConfig ?? baseConfig
+			if (cdpConfig) derivedServers.set(nativeName, skillServer.name)
 			const alreadyActive = activeServers.get(nativeName)
 			if (alreadyActive) {
 				if (!isDeepStrictEqual(alreadyActive.config, nativeConfig)) {
@@ -308,12 +411,7 @@ export async function registerV2SkillMcpRuntime(
 		inflight += 1
 		try {
 			const operation = validateOperation(input)
-			if (operation === "prompt") {
-				throw new Error("MCP prompt execution is unavailable in OpenCode v2's public plugin API; use a native MCP tool or resource instead.")
-			}
-			if (input.cdp_url) {
-				throw new Error("cdp_url per-call MCP instances are not available through OpenCode v2's public plugin API.")
-			}
+			const cdpUrl = input.cdp_url ? validateCdpUrl(input.cdp_url) : undefined
 			const skillServer = findSkillServer(input.mcp_name, skills)
 			if (!skillServer) {
 				const builtin = BUILTIN_MCP_TOOL_HINTS[input.mcp_name]
@@ -325,8 +423,25 @@ export async function registerV2SkillMcpRuntime(
 			if (disabledMcps.has(input.mcp_name.trim().toLowerCase())) {
 				throw new Error(`MCP server "${input.mcp_name}" is disabled by disabled_mcps.`)
 			}
-			const nativeServer = await ensureServer(skillServer, context.signal)
 			const args = parseSkillMcpArguments(input.arguments)
+			if (operation === "prompt") {
+				// The public v2 API has no MCP prompts/get; use the shared skill MCP client, as the legacy tool did.
+				if (skillServer.config.disabled) throw new Error(`MCP server "${input.mcp_name}" is disabled in its skill configuration.`)
+				promptManager ??= new SkillMcpManager()
+				const stringArgs = Object.fromEntries(Object.entries(args).map(([key, value]) => [key, typeof value === "string" ? value : JSON.stringify(value)]))
+				const messages = await withAbort(promptManager.getPrompt(
+					{ serverName: input.mcp_name, skillName: skillServer.skill.name, sessionID: String(context.sessionID), scope: skillServer.skill.scope, directory: String(ctx.location.directory) },
+					{ config: skillServer.config, skillName: skillServer.skill.name },
+					input.prompt_name!,
+					stringArgs,
+					cdpUrl ? { cdpUrl } : undefined,
+				), context.signal, "skill_mcp prompt request was cancelled")
+				return {
+					content: filterText(JSON.stringify(messages, null, 2), input.grep),
+					metadata: { mcp_name: input.mcp_name, skill: skillServer.skill.name, prompt_name: input.prompt_name },
+				}
+			}
+			const nativeServer = await ensureServer(skillServer, context.signal, cdpUrl)
 			if (operation === "tool") {
 				const requestedTool = input.tool_name!
 				const native = await getNativeTool(matchingToolId(nativeServer, requestedTool), context.signal)
@@ -369,7 +484,7 @@ export async function registerV2SkillMcpRuntime(
 		addTool(editor) {
 			addV2Tool(editor, {
 				name: "skill_mcp",
-				description: `${SKILL_MCP_DESCRIPTION} Tool and resource operations use native OpenCode MCP executors. MCP prompts and per-call cdp_url are unavailable through the v2 public plugin API.`,
+				description: `${SKILL_MCP_DESCRIPTION} Tool and resource operations use native OpenCode MCP executors; prompts use the shared skill MCP client. Optional cdp_url connects Playwright to a runtime CDP endpoint.`,
 				input: skillMcpInput,
 				options: { codemode: false },
 				execute: invoke,
@@ -388,6 +503,8 @@ export async function registerV2SkillMcpRuntime(
 					try { await registration.dispose() } catch (error) { errors.push(error) }
 				}
 				try { await mcpRegistration?.dispose() } catch (error) { errors.push(error) }
+				try { await promptManager?.disconnectAll() } catch (error) { errors.push(error) }
+				derivedServers.clear()
 				if (errors.length > 0) throw new AggregateError(errors, "skill_mcp cleanup failed")
 			})()
 			return cleanupPromise

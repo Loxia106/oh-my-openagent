@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test"
+import { mkdtemp, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type { Plugin } from "@opencode/plugin"
 import type { ToolContext, ToolEditor } from "@opencode/plugin/promise/tool"
 import type { OhMyOpenCodeConfig } from "../config"
 import type { LoadedSkill } from "../features/opencode-skill-loader/types"
-import { registerV2SkillMcpRuntime } from "./tool-skill-mcp"
+import { cdpServerName, registerV2SkillMcpRuntime } from "./tool-skill-mcp"
 
 type NativeTool = {
 	id: string
@@ -24,6 +27,9 @@ function skill(mcpConfig: Record<string, unknown>): LoadedSkill {
 function harness(initialConfig: Record<string, unknown> = {}) {
 	const transforms: Array<(editor: any) => void> = []
 	const sessionHooks = new Map<string, (event: any) => unknown>()
+	const permissionHooks = new Map<string, (event: any) => unknown>()
+	const agentPermissions: Array<{ action: string; resource: string; effect: string }> = []
+	const sessionPermissions: Array<{ action: string; resource: string; effect: string }> = []
 	const toolHooks = new Map<string, (event: any) => unknown>()
 	const baseConfig = new Map<string, unknown>(Object.entries(initialConfig))
 	let currentConfig = new Map<string, any>(baseConfig)
@@ -99,12 +105,23 @@ function harness(initialConfig: Record<string, unknown> = {}) {
 				sessionHooks.set(name, callback)
 				return { dispose: async () => { sessionHooks.delete(name); disposed.push("session") } }
 			},
+			get: async ({ sessionID }: { sessionID: string }) => ({ id: sessionID, agent: "sisyphus", permissions: sessionPermissions }),
+		},
+		agent: { list: async () => ({ data: [{ id: "sisyphus", permissions: agentPermissions }] }) },
+		permission: {
+			hook: async (name: string, callback: (event: any) => unknown) => {
+				permissionHooks.set(name, callback)
+				return { dispose: async () => { permissionHooks.delete(name); disposed.push("permission") } }
+			},
 		},
 	} as unknown as Plugin.Context
 
 	return {
 		ctx,
 		sessionHooks,
+		permissionHooks,
+		agentPermissions,
+		sessionPermissions,
 		toolHooks,
 		get currentConfig() { return currentConfig },
 		get reloadCount() { return reloadCount },
@@ -243,21 +260,72 @@ describe("native v2 skill_mcp adapter", () => {
 		expect(host.reloadCount).toBe(2)
 		expect(Array.from(host.currentConfig.keys()).some((name) => name === nativeName)).toBe(false)
 		expect(cleaned).toBe(true)
-		expect(host.disposed).toEqual(["tool", "session", "mcp"])
+		expect(host.disposed).toEqual(["permission", "tool", "session", "mcp"])
 	})
 
-	test("rejects native MCP prompts, cdp_url, and disabled skill servers without reload", async () => {
+	test("cdp_url starts a derived local server with --cdp-endpoint whose tools keep the base permission rules", async () => {
 		const host = harness()
-		const runtime = await registerV2SkillMcpRuntime(host.ctx, { disabled_mcps: ["sqlite"] } as unknown as OhMyOpenCodeConfig, [skill({
-			sqlite: { command: "node" },
-		})])
+		const runtime = await registerV2SkillMcpRuntime(host.ctx, {} as OhMyOpenCodeConfig, [skill({ sqlite: { command: "node", args: ["server.js"] } })])
 		const call = addTool(runtime!)
-		await expect(call.execute({ mcp_name: "sqlite", prompt_name: "summarize" }, toolContext())).rejects.toThrow("public plugin API")
-		await expect(call.execute({ mcp_name: "sqlite", tool_name: "query", cdp_url: "http://localhost:9222" }, toolContext())).rejects.toThrow("cdp_url per-call")
-		await expect(call.execute({ mcp_name: "sqlite", tool_name: "query" }, toolContext())).rejects.toThrow("disabled by disabled_mcps")
-		expect(host.reloadCount).toBe(0)
+		const result = await call.execute({ mcp_name: "sqlite", tool_name: "query", cdp_url: "http://localhost:9222" }, toolContext())
+		const derived = cdpServerName("sqlite", "http://localhost:9222")
+		expect(host.currentConfig.get(derived)?.command).toEqual(["node", "server.js", "--cdp-endpoint", "http://localhost:9222"])
+		expect(host.currentConfig.has("sqlite")).toBe(false)
+		expect(String(result.content)).toContain("sessionID")
+		const hidden = { tools: { [`${derived}_query`]: {}, other: {} } }
+		await host.sessionHooks.get("context")!(hidden)
+		expect(Object.keys(hidden.tools)).toEqual(["other"])
+
+		const evaluate = host.permissionHooks.get("evaluate")!
+		const allowed = { sessionID: "ses-1", agent: "sisyphus", action: `${derived}_query`, resources: ["*"], effect: "allow" }
+		await evaluate(allowed)
+		expect(allowed.effect).toBe("allow")
+		host.agentPermissions.push({ action: "sqlite_query", resource: "*", effect: "deny" })
+		const denied = { sessionID: "ses-1", agent: "sisyphus", action: `${derived}_query`, resources: ["*"], effect: "allow" }
+		await evaluate(denied)
+		expect(denied.effect).toBe("deny")
+		host.agentPermissions.length = 0
+		host.sessionPermissions.push({ action: "sqlite_*", resource: "*", effect: "ask" })
+		const asked = { sessionID: "ses-1", agent: "sisyphus", action: `${derived}_query`, resources: ["*"], effect: "allow" }
+		await evaluate(asked)
+		expect(asked.effect).toBe("ask")
+		const unrelated = { sessionID: "ses-1", agent: "sisyphus", action: "other_tool", resources: ["*"], effect: "allow" }
+		await evaluate(unrelated)
+		expect(unrelated.effect).toBe("allow")
+		await expect(call.execute({ mcp_name: "sqlite", tool_name: "query", cdp_url: "file:///etc/passwd" }, toolContext())).rejects.toThrow("cdp_url must use")
 		await runtime!.cleanup()
 	})
+
+	test("prompt_name returns the MCP prompt messages through the shared skill MCP client", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "omo-v2-skill-mcp-prompt-"))
+		const sdk = join(process.cwd(), "node_modules/@modelcontextprotocol/sdk/dist/esm/server")
+		const serverPath = join(directory, "prompt-server.mjs")
+		await writeFile(serverPath, [
+			`import { McpServer } from ${JSON.stringify(join(sdk, "mcp.js"))}`,
+			`import { StdioServerTransport } from ${JSON.stringify(join(sdk, "stdio.js"))}`,
+			`import { z } from ${JSON.stringify(join(process.cwd(), "node_modules/zod/index.js"))}`,
+			`const server = new McpServer({ name: "prompt-fixture", version: "1.0.0" })`,
+			`server.registerPrompt("summarize", { description: "Summarize text", argsSchema: { text: z.string() } }, ({ text }) => ({ messages: [{ role: "user", content: { type: "text", text: "PROMPT_FIXTURE_SUMMARY:" + text } }] }))`,
+			`await server.connect(new StdioServerTransport())`,
+		].join("\n"))
+		const host = harness()
+		// The shared client starts stdio servers in the native project directory.
+		;(host.ctx as unknown as { location: { directory: string } }).location = { directory }
+		const runtime = await registerV2SkillMcpRuntime(host.ctx, {} as OhMyOpenCodeConfig, [skill({ helper: { command: process.execPath, args: [serverPath] } })])
+		const call = addTool(runtime!)
+		try {
+			const result = await call.execute({ mcp_name: "helper", prompt_name: "summarize", arguments: { text: "release notes" } }, toolContext())
+			expect(String(result.content)).toContain("PROMPT_FIXTURE_SUMMARY:release notes")
+			expect(result.metadata).toMatchObject({ mcp_name: "helper", prompt_name: "summarize" })
+			expect(host.reloadCount).toBe(0)
+		} finally {
+			await runtime!.cleanup()
+		}
+		const disabled = harness()
+		const disabledRuntime = await registerV2SkillMcpRuntime(disabled.ctx, { disabled_mcps: ["helper"] } as unknown as OhMyOpenCodeConfig, [skill({ helper: { command: "node" } })])
+		await expect(addTool(disabledRuntime!).execute({ mcp_name: "helper", prompt_name: "summarize" }, toolContext())).rejects.toThrow("disabled by disabled_mcps")
+		await disabledRuntime!.cleanup()
+	}, 20_000)
 
 	test("honors skill_mcp and claude_code.mcp gates", async () => {
 		const disabledTool = await registerV2SkillMcpRuntime(harness().ctx, { disabled_tools: ["skill_mcp"] } as unknown as OhMyOpenCodeConfig, [])
@@ -284,6 +352,6 @@ describe("native v2 skill_mcp adapter", () => {
 		await executing
 		await cleanup
 		expect(cleaned).toBe(true)
-		expect(host.disposed).toEqual(["tool", "session", "mcp"])
+		expect(host.disposed).toEqual(["permission", "tool", "session", "mcp"])
 	})
 })
