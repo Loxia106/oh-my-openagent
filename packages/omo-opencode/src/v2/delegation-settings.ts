@@ -37,6 +37,8 @@ export type V2DelegationFailureWitness = {
 	readonly responseStatus: number
 	readonly idle: number
 	readonly background: boolean
+	/** A silent child interrupted by the OMO watchdog rather than a provider HTTP failure. */
+	readonly reason?: "timeout"
 }
 
 export type V2DelegationSettingsIdentity = {
@@ -164,6 +166,7 @@ function decodeFailureWitness(value: unknown): V2DelegationFailureWitness | unde
 		responseStatus: value.responseStatus as number,
 		idle: value.idle as number,
 		background: value.background,
+		...(value.reason === "timeout" ? { reason: "timeout" as const } : {}),
 	}
 }
 

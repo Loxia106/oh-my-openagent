@@ -63,6 +63,8 @@ function fallbackWrapperHarness(options: {
 	appendAssistantAfterFailure?: boolean
 	failWitnessWriteOnce?: boolean
 	stopped?: boolean
+	hang?: boolean
+	progressBeforeWatchdog?: boolean
 } = {}) {
 	const directory = process.cwd()
 	const projectID = "project-fallback-wrapper"
@@ -83,6 +85,7 @@ function fallbackWrapperHarness(options: {
 	])
 	const histories = new Map<string, unknown[]>([[parentSessionID, []]])
 	const hookCallbacks = new Map<string, (event: unknown) => unknown>()
+	const interrupts: string[] = []
 	const storageValues = new Map<string, unknown>()
 	let failWitnessWriteOnce = options.failWitnessWriteOnce === true
 	let stopped = options.stopped === true
@@ -128,6 +131,14 @@ function fallbackWrapperHarness(options: {
 				return session
 			},
 			context: async ({ sessionID }: { sessionID: string }) => [...(histories.get(sessionID) ?? [])],
+			interrupt: async ({ sessionID }: { sessionID: string }) => {
+				interrupts.push(sessionID)
+				const session = sessions.get(sessionID)
+				if (session) {
+					session.outcome = "interrupted"
+					session.time.idle = Date.now() + 1
+				}
+			},
 			hook: async (name: string, callback: (event: never) => unknown) => {
 				hookCallbacks.set(name, callback as (event: unknown) => unknown)
 				return { dispose: async () => { hookCallbacks.delete(name) } }
@@ -146,6 +157,7 @@ function fallbackWrapperHarness(options: {
 		childSessions: new Map(),
 		isAliasInvocation: () => false,
 		isStopped: async () => stopped,
+		childWatchdogMs: 60,
 	})
 	const invoked: Array<{ sessionID?: string; agent: string; model?: string; background?: boolean }> = []
 	const ForeignToolFailure = Schema.TaggedError()("Tool.Error", { message: Schema.String })
@@ -191,6 +203,23 @@ function fallbackWrapperHarness(options: {
 				content: "<subagent sessionID=\"ses-fallback-child\" state=\"completed\">CHILD_FALLBACK_OK</subagent>",
 				metadata: { sessionID: childSessionID, status: "completed" },
 			}
+		}
+		if (options.hang) {
+			const model = primary
+			await hookCallbacks.get("model.request")?.({ sessionID: childSessionID, agent: "explore", model, kind: "primary" })
+			await hookCallbacks.get("http.response")?.({ sessionID: childSessionID, agent: "explore", model, kind: "primary", request: new Request("http://localhost/mock"), response: new Response(null, { status: 200 }) })
+			// A host retry of the same silent step must not re-arm the first-prompt watchdog.
+			await new Promise((resolve) => setTimeout(resolve, 30))
+			await hookCallbacks.get("model.request")?.({ sessionID: childSessionID, agent: "explore", model, kind: "primary" })
+			if (options.progressBeforeWatchdog) {
+				await admission.observeExecution({ type: "session.step.streamed", created: Date.now(), data: { sessionID: childSessionID } })
+				await new Promise((resolve) => setTimeout(resolve, 150))
+				throw new ForeignToolFailure({ message: `Subagent cancelled (sessionID: ${childSessionID})` })
+			}
+			const deadline = Date.now() + 1_000
+			while (sessions.get(childSessionID)!.outcome !== "interrupted" && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10))
+			await admission.observeExecution({ id: "evt-child-interrupted", type: "session.execution.interrupted", created: Date.now(), durable: { aggregateID: childSessionID, seq: ++eventSequence }, data: { sessionID: childSessionID } })
+			throw new ForeignToolFailure({ message: `Subagent cancelled (sessionID: ${childSessionID})` })
 		}
 		await emitFailure(options.responseStatus ?? 429, options.errorSessionID ?? childSessionID)
 		throw new ForeignToolFailure({ message: `Subagent failed (sessionID: ${options.errorSessionID ?? childSessionID}): fixture provider failure` })
@@ -239,7 +268,7 @@ function fallbackWrapperHarness(options: {
 		}
 	}
 	return {
-		admission, native, context, invoked, storageValues, hooks: hookCallbacks, sessions, histories,
+		admission, native, context, invoked, storageValues, hooks: hookCallbacks, sessions, histories, interrupts,
 		childSessionID, parentSessionID, emitFailure,
 		abortController,
 		stop: () => { stopped = true },
@@ -443,6 +472,30 @@ describe("native child runtime fallback wrapper", () => {
 				await h.admission.dispose()
 			}
 		}
+	})
+
+	test("interrupts a silent foreground child after the watchdog and continues it on the next fallback", async () => {
+		const h = fallbackWrapperHarness({ hang: true })
+		const wrapped = h.admission.wrap(h.native as never)
+		const startedAt = Date.now()
+		const result = await wrapped.execute({ agent: "explore", description: "d", prompt: "p" } as never, h.context) as { output?: { status?: string; sessionID?: string } }
+		expect(h.interrupts).toEqual([h.childSessionID])
+		expect(Date.now() - startedAt).toBeLessThan(60 + 30 + 400)
+		expect(h.invoked.map((call) => ({ sessionID: call.sessionID, model: call.model }))).toEqual([
+			{ sessionID: undefined, model: "openai/primary" },
+			{ sessionID: h.childSessionID, model: "openai/backup" },
+		])
+		expect(result.output).toMatchObject({ status: "completed", sessionID: h.childSessionID })
+		await h.admission.dispose()
+	})
+
+	test("child progress before the watchdog prevents interruption and fallback", async () => {
+		const h = fallbackWrapperHarness({ hang: true, progressBeforeWatchdog: true })
+		const wrapped = h.admission.wrap(h.native as never)
+		await expect(wrapped.execute({ agent: "explore", description: "d", prompt: "p" } as never, h.context)).rejects.toThrow("Subagent cancelled")
+		expect(h.interrupts).toEqual([])
+		expect(h.invoked).toHaveLength(1)
+		await h.admission.dispose()
 	})
 
 	test("persists background failure before releasing its transient invocation and retries only on explicit same-child resume", async () => {

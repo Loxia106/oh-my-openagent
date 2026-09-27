@@ -98,7 +98,20 @@ type ChildInvocation = {
 	readonly background: boolean
 	readonly baselineIdle?: number
 	primary?: ChildPrimaryRequest
+	/** Legacy first-prompt watchdog: set when OMO interrupted a silent child to advance its fallback. */
+	timedOut?: boolean
+	watchdog?: ReturnType<typeof setTimeout>
+	/** First-prompt semantics: armed once per invocation; host retries of the same step do not re-arm it. */
+	watchdogArmed?: boolean
 }
+
+/** Legacy runtime-fallback first-prompt watchdog for delegated children (DEFAULT_FIRST_PROMPT_WATCHDOG_MS). */
+export const CHILD_FALLBACK_WATCHDOG_MS = 90_000
+const TIMEOUT_WITNESS_STATUS = 408
+const CHILD_PROGRESS_EVENTS = new Set([
+	"session.step.streamed", "session.text.started", "session.text.delta", "session.reasoning.started",
+	"session.reasoning.delta", "session.tool.called", "session.tool.input.started",
+])
 
 function record(value: unknown): Record<string, unknown> | undefined {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -496,6 +509,7 @@ export function createV2DelegationAdmission(input: {
 	isAliasInvocation: (context: ToolContext) => boolean
 	resolveLogicalParent?: VerifiedLogicalParentResolver
 	isStopped?: (sessionID: string) => boolean | Promise<boolean>
+	childWatchdogMs?: number
 }): V2DelegationAdmission {
 	const { ctx, config, runs, childSessions, isAliasInvocation } = input
 	const admission = createV2BackgroundAdmission(ctx, config.background_task as BackgroundTaskConfig | undefined, undefined, input.resolveLogicalParent)
@@ -547,6 +561,7 @@ export function createV2DelegationAdmission(input: {
 						requestedAt,
 						userMessageID: history.userMessageID,
 					}
+					armWatchdog(invocation)
 				})()))
 				local.push(() => modelRequest.dispose())
 				const response = await ctx.session.hook("http.response", (hook) => {
@@ -592,6 +607,77 @@ export function createV2DelegationAdmission(input: {
 
 	async function shouldStop(parentSessionID: string, childSessionID: string): Promise<boolean> {
 		return disposed || await stopped([parentSessionID, childSessionID])
+	}
+
+	function clearWatchdog(invocation: ChildInvocation): void {
+		if (invocation.watchdog) clearTimeout(invocation.watchdog)
+		invocation.watchdog = undefined
+	}
+
+	/** Only interrupt a silent child when its stored chain can still advance to another model. */
+	async function hasNextFallback(invocation: ChildInvocation): Promise<boolean> {
+		const policy = childRetryPolicy(config)
+		if (!policy) return false
+		const stored = await settingsStore.read(invocation.sessionID, { parentSessionID: invocation.parentSessionID, agentID: invocation.agentID, model: invocation.model })
+		if (!stored?.fallbackState) return false
+		return advanceV2DelegationFallback(stored.fallbackState, invocation.model, { now: Date.now(), cooldownMs: policy.cooldownMs, maxAttempts: policy.maxAttempts }) !== undefined
+	}
+
+	function armWatchdog(invocation: ChildInvocation): void {
+		if (invocation.watchdogArmed || disposed || !childRetryPolicy(config)) return
+		invocation.watchdogArmed = true
+		invocation.watchdog = setTimeout(() => {
+			invocation.watchdog = undefined
+			if (disposed || invocations.get(invocation.sessionID) !== invocation) return
+			track((async () => {
+				if (await shouldStop(invocation.parentSessionID, invocation.sessionID) || !await hasNextFallback(invocation)) {
+					log("[v2 delegation] Child produced no progress before the watchdog, but no fallback can take over.", { sessionID: invocation.sessionID })
+					return
+				}
+				if (invocations.get(invocation.sessionID) !== invocation) return
+				invocation.timedOut = true
+				log("[v2 delegation] Child produced no progress before the watchdog; interrupting to advance its fallback.", { sessionID: invocation.sessionID })
+				await ctx.session.interrupt({ sessionID: invocation.sessionID as Parameters<Plugin.Context["session"]["interrupt"]>[0]["sessionID"] })
+			})()).catch((error) => log("[v2 delegation] Child watchdog failed closed.", { sessionID: invocation.sessionID, error: textError(error) }))
+		}, input.childWatchdogMs ?? CHILD_FALLBACK_WATCHDOG_MS)
+	}
+
+	function assistantKey(assistant: { id: string } | undefined, userMessageID: string): string {
+		return assistant?.id ?? `no-assistant:${userMessageID}`
+	}
+
+	/** Witness for a child the watchdog interrupted: same ownership proof, interrupted outcome, no HTTP status. */
+	async function verifyTimeout(invocation: ChildInvocation): Promise<V2DelegationFailureWitness | undefined> {
+		const request = invocation.primary
+		if (!invocation.timedOut || !childRetryPolicy(config) || !request || await shouldStop(invocation.parentSessionID, invocation.sessionID)) return undefined
+		let session: SessionInfo
+		try { session = await ctx.session.get({ sessionID: invocation.sessionID }) } catch { return undefined }
+		if (session.id !== invocation.sessionID || !isV2DelegationSessionInLocation(session, ctx.location) ||
+			!await childBelongsTo(session, invocation.parentSessionID) || session.agent !== invocation.agentID ||
+			session.outcome !== "interrupted" || typeof session.time?.idle !== "number" || session.time.idle < request.requestedAt) return undefined
+		const sessionModel = nativeRequestModel(session.model)
+		if (!sessionModel || !sameModel(sessionModel, invocation.model)) return undefined
+		let history: ReturnType<typeof latestUserAndAssistant>
+		try { history = latestUserAndAssistant(await ctx.session.context({ sessionID: invocation.sessionID })) } catch { return undefined }
+		if (history.userMessageID !== request.userMessageID) return undefined
+		const stored = await settingsStore.read(invocation.sessionID, { parentSessionID: invocation.parentSessionID, agentID: invocation.agentID, model: invocation.model })
+		if (!stored?.fallbackState) return undefined
+		return {
+			version: 1,
+			sessionID: invocation.sessionID,
+			parentSessionID: invocation.parentSessionID,
+			agentID: invocation.agentID,
+			model: invocation.model,
+			userMessageID: request.userMessageID,
+			assistantMessageID: assistantKey(history.assistant, request.userMessageID),
+			errorType: "provider.timeout",
+			status: TIMEOUT_WITNESS_STATUS,
+			requestAt: request.requestedAt,
+			responseStatus: TIMEOUT_WITNESS_STATUS,
+			idle: session.time.idle,
+			background: invocation.background,
+			reason: "timeout",
+		}
 	}
 
 	async function verifyFailure(
@@ -647,7 +733,8 @@ export function createV2DelegationAdmission(input: {
 		return left.sessionID === right.sessionID && left.parentSessionID === right.parentSessionID && left.agentID === right.agentID &&
 			sameModel(left.model, right.model) && left.userMessageID === right.userMessageID && left.assistantMessageID === right.assistantMessageID &&
 			left.errorType === right.errorType && left.status === right.status && left.requestAt === right.requestAt &&
-			left.responseStatus === right.responseStatus && left.idle === right.idle && left.background === right.background
+			left.responseStatus === right.responseStatus && left.idle === right.idle && left.background === right.background &&
+			left.reason === right.reason
 	}
 
 	async function currentSessionProof(
@@ -657,13 +744,17 @@ export function createV2DelegationAdmission(input: {
 		let session: SessionInfo
 		try { session = await ctx.session.get({ sessionID: proof.sessionID }) } catch { return undefined }
 		if (session.id !== proof.sessionID || !isV2DelegationSessionInLocation(session, ctx.location) ||
-			!await childBelongsTo(session, proof.parentSessionID) || session.agent !== proof.agentID || session.outcome !== "failed" ||
+			!await childBelongsTo(session, proof.parentSessionID) || session.agent !== proof.agentID ||
+			session.outcome !== (proof.witness.reason === "timeout" ? "interrupted" : "failed") ||
 			typeof session.time?.idle !== "number" || session.time.idle !== proof.witness.idle) return undefined
 		const model = nativeRequestModel(session.model)
 		if (!model || !sameModel(model, proof.previousModel)) return undefined
 		let history: ReturnType<typeof latestUserAndAssistant>
 		try { history = latestUserAndAssistant(await ctx.session.context({ sessionID: proof.sessionID })) } catch { return undefined }
-		if (history.userMessageID !== proof.witness.userMessageID || history.assistant?.id !== proof.witness.assistantMessageID ||
+		if (proof.witness.reason === "timeout") {
+			if (history.userMessageID !== proof.witness.userMessageID ||
+				assistantKey(history.assistant, proof.witness.userMessageID) !== proof.witness.assistantMessageID) return undefined
+		} else if (history.userMessageID !== proof.witness.userMessageID || history.assistant?.id !== proof.witness.assistantMessageID ||
 			history.assistant.agentID !== proof.agentID || !sameModel(history.assistant.model, proof.previousModel) ||
 			history.assistant.errorType !== proof.witness.errorType ||
 			(history.assistant.status !== undefined && history.assistant.status !== proof.witness.responseStatus)) return undefined
@@ -687,14 +778,17 @@ export function createV2DelegationAdmission(input: {
 		let session: SessionInfo
 		try { session = await ctx.session.get({ sessionID: childSessionID }) } catch { return undefined }
 		if (session.id !== childSessionID || !isV2DelegationSessionInLocation(session, ctx.location) ||
-			!await childBelongsTo(session, parentSessionID) || session.agent !== agentID || session.outcome !== "failed") return undefined
+			!await childBelongsTo(session, parentSessionID) || session.agent !== agentID ||
+			(session.outcome !== "failed" && session.outcome !== "interrupted")) return undefined
 		const currentModel = nativeRequestModel(session.model)
 		if (!currentModel) return undefined
 		const stored = await settingsStore.read(childSessionID, { parentSessionID, agentID, model: currentModel })
 		const witness = stored?.failureWitness
+		const timeout = witness?.reason === "timeout"
 		if (!stored?.fallbackState || !witness || witness.background === allowForeground ||
+			session.outcome !== (timeout ? "interrupted" : "failed") ||
 			witness.sessionID !== childSessionID || witness.parentSessionID !== parentSessionID || witness.agentID !== agentID ||
-			!sameModel(witness.model, currentModel) || !policy.retryOnErrors.includes(witness.responseStatus) ||
+			!sameModel(witness.model, currentModel) || (!timeout && !policy.retryOnErrors.includes(witness.responseStatus)) ||
 			typeof session.time?.idle !== "number" || session.time.idle !== witness.idle) return undefined
 		const agent = (await ctx.agent.list()).data.find((candidate) => candidate.id === agentID)
 		if (!agent || agent.mode === "primary") return undefined
@@ -785,6 +879,10 @@ export function createV2DelegationAdmission(input: {
 
 	function nativeSubagentFailure(error: unknown, childSessionID: string): boolean {
 		return Schema.is(ToolError)(error) && error.message.startsWith(`Subagent failed (sessionID: ${childSessionID}):`)
+	}
+
+	function nativeSubagentCancelled(error: unknown, childSessionID: string): boolean {
+		return Schema.is(ToolError)(error) && error.message.startsWith(`Subagent cancelled (sessionID: ${childSessionID})`)
 	}
 
 	async function invokePrepared(
@@ -945,9 +1043,11 @@ export function createV2DelegationAdmission(input: {
 				}
 				const childSessionID = boundSessionID ?? (mode === "resume" ? nativeInput.sessionID : undefined)
 				const invocation = childSessionID ? invocations.get(childSessionID) : undefined
-				if (invocation && !invocation.background && childSessionID && nativeSubagentFailure(error, childSessionID) && !context.signal.aborted) {
+				if (invocation) clearWatchdog(invocation)
+				const timedOut = invocation?.timedOut === true && childSessionID !== undefined && nativeSubagentCancelled(error, childSessionID)
+				if (invocation && !invocation.background && childSessionID && (timedOut || nativeSubagentFailure(error, childSessionID)) && !context.signal.aborted) {
 					try {
-						const witness = await verifyFailure(invocation)
+						const witness = timedOut ? await verifyTimeout(invocation) : await verifyFailure(invocation)
 						if (witness) {
 							await settingsStore.recordFailureWitness(childSessionID, {
 								parentSessionID: invocation.parentSessionID,
@@ -1031,6 +1131,12 @@ export function createV2DelegationAdmission(input: {
 	}
 
 	async function observeExecution(eventValue: unknown): Promise<void> {
+		const raw = record(eventValue)
+		const progressSession = raw && typeof raw.type === "string" && CHILD_PROGRESS_EVENTS.has(raw.type) ? record(raw.data)?.sessionID : undefined
+		if (typeof progressSession === "string") {
+			const watched = invocations.get(progressSession)
+			if (watched) clearWatchdog(watched)
+		}
 		const event = executionEvent(eventValue)
 		try { await admission.observeExecution(eventValue) } catch (error) {
 			log("[v2 delegation] Admission observation failed while processing a child event.", error)
@@ -1044,6 +1150,21 @@ export function createV2DelegationAdmission(input: {
 		}
 		const invocation = invocations.get(childSessionID)
 		if (!invocation) return
+		if (event.type === "session.execution.succeeded" || event.type === "session.execution.failed" || event.type === "session.execution.interrupted") clearWatchdog(invocation)
+		if (event.type === "session.execution.interrupted" && invocation.background && invocation.timedOut) {
+			try {
+				const witness = await verifyTimeout(invocation)
+				if (witness) await settingsStore.recordFailureWitness(childSessionID, {
+					parentSessionID: invocation.parentSessionID,
+					agentID: invocation.agentID,
+					model: invocation.model,
+				}, witness)
+			} catch (error) {
+				log("[v2 delegation] Background child timeout could not be persisted; explicit retry is disabled.", { sessionID: childSessionID, error: textError(error) })
+			}
+		}
+		// The foreground catch path owns a watchdog interruption; keep its invocation until it runs.
+		if (event.type === "session.execution.interrupted" && invocation.timedOut && !invocation.background) return
 		if (event.type === "session.execution.succeeded" || event.type === "session.execution.interrupted") {
 			if (event.created !== undefined && event.created >= (invocation.primary?.requestedAt ?? invocation.startedAt) && invocations.get(childSessionID) === invocation) {
 				invocations.delete(childSessionID)
@@ -1075,6 +1196,7 @@ export function createV2DelegationAdmission(input: {
 		for (const dispose of observerDisposers.reverse()) {
 			try { await dispose() } catch (error) { errors.push(error) }
 		}
+		for (const invocation of invocations.values()) clearWatchdog(invocation)
 		const operations = [...pending]
 		if (operations.length) await Promise.allSettled(operations)
 		observerDisposers.length = 0
