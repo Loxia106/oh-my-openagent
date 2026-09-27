@@ -32,6 +32,17 @@ bun run install:opencode2 -- --project /절대/경로/작업프로젝트
 
 Team/Hyperplan에는 `[opencode].team_mode.enabled`, `/goal`과 목표 도구에는 `[opencode].goal.enabled`가 필요합니다. 첫 사용자 입력을 자동 목표로 삼으려면 `[opencode].default_mode.goal`도 `true`로 설정합니다. 이미 저장된 목표는 그대로 유지하며 자식 에이전트에는 자동 목표를 만들지 않습니다. 사용할 모델은 OpenCode에 등록하고 OMO의 에이전트·카테고리 설정으로 지정합니다. 선택적 LSP, tmux 및 외부 MCP 서버에는 각 기능의 실행 파일과 설정도 필요합니다.
 
+긴 대화와 모델 정책 기능도 같은 파일에서 켭니다. 모두 기본값은 꺼져 있습니다.
+
+- `experimental.preemptive_compaction`: 컨텍스트의 78%에서 자동 압축을 시작합니다.
+- `experimental.aggressive_truncation`: 압축 요청 안의 큰 도구 결과를 줄입니다.
+- `agents.<이름>.compaction.model`: 압축 요약에 쓸 모델을 지정합니다.
+- `agents.<이름>.ultrawork`: `ultrawork`/`ulw` 턴에 쓸 모델과 변형을 지정합니다.
+- `runtime_fallback`: 공급자 오류 시 폴백 체인으로 전환하며, `timeout_seconds`로 응답 없는 폴백을 끊습니다.
+- `model_fallback`: 에이전트 기본 요구 모델 체인을 폴백으로 사용합니다.
+- `monitor.enabled`: `monitor_*` 도구를 켭니다.
+- `hashline_edit`: `read`/`edit`를 `LINE#ID` 앵커 방식으로 바꿉니다.
+
 ## 실행 흐름
 
 - 일반 작업은 Sisyphus 또는 Hephaestus에서 시작합니다. Explore·Librarian의 조사, Junior의 구현, Oracle의 검토 결과를 부모 대화에서 이어받습니다.
