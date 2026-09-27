@@ -211,6 +211,25 @@ describe("loadPluginExtendedConfig", () => {
       },
     })
   })
+
+  test("#given explicit project roots while cwd stays elsewhere #when loading concurrently #then disabled-hook settings do not cross directories", async () => {
+    const firstProject = join(tempDirectory, "explicit-a")
+    const secondProject = join(tempDirectory, "explicit-b")
+    const firstPath = join(firstProject, ".opencode", "opencode-cc-plugin.json")
+    const secondPath = join(secondProject, ".opencode", "opencode-cc-plugin.json")
+    mkdirSync(join(firstProject, ".opencode"), { recursive: true })
+    mkdirSync(join(secondProject, ".opencode"), { recursive: true })
+    writeConfigFile(firstPath, ["first-only"])
+    writeConfigFile(secondPath, ["second-only"])
+
+    const [first, second] = await Promise.all([
+      loadPluginExtendedConfig({ projectDirectory: firstProject }),
+      loadPluginExtendedConfig({ projectDirectory: secondProject }),
+    ])
+
+    expect(first.disabledHooks?.Stop).toEqual(["first-only"])
+    expect(second.disabledHooks?.Stop).toEqual(["second-only"])
+  })
 })
 
 function writeConfigFile(filePath: string, stopPatterns: string[]): void {

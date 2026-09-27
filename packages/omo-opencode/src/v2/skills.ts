@@ -5,6 +5,7 @@ import type { OhMyOpenCodeConfig } from "../config"
 import type { LoadedSkill } from "../features/opencode-skill-loader/types"
 import { collectDisabledSkillAliases, createSkillContext } from "../plugin/skill-context"
 import { log } from "../shared/logger"
+import { adaptV2TeamSkills } from "./team-skill-adapter"
 
 export type V2SkillCatalog = {
   readonly skills: readonly Skill.Info[]
@@ -18,12 +19,13 @@ function isUnsupportedTeamBuiltin(skill: Pick<LoadedSkill, "name" | "scope">): b
 }
 
 /**
- * Remove built-in skills whose instructions require the native OMO team
- * manager, which is not available in the OpenCode 2 adapter. Scope is part of
+ * Remove built-in skills whose instructions require a disabled native team
+ * manager. Scope is part of
  * the merged skill record, so user/project skills with the same name remain
  * available.
  */
-export function filterUnsupportedTeamBuiltinSkills(catalog: V2SkillCatalog): V2SkillCatalog {
+export function filterUnsupportedTeamBuiltinSkills(catalog: V2SkillCatalog, teamModeAvailable = false): V2SkillCatalog {
+  if (teamModeAvailable) return catalog
   const removedNames = new Set(catalog.loaded
     .filter(isUnsupportedTeamBuiltin)
     .map((skill) => skill.name.toLowerCase()))
@@ -61,16 +63,23 @@ export async function loadV2SkillCatalog(
   directory: string,
 ): Promise<V2SkillCatalog> {
   const context = await createSkillContext({ directory, pluginConfig: config })
-  const loaded = context.mergedSkills.filter((skill) => !isUnsupportedTeamBuiltin(skill))
-  const skills = await Promise.all(loaded.map(async (skill) => {
-    if (skill.lazyContent && !skill.lazyContent.loaded) {
-      return toV2SkillInfo({
+  const materialized = await Promise.all(context.mergedSkills
+    .filter((skill) => config.team_mode?.enabled === true || !isUnsupportedTeamBuiltin(skill))
+    .map(async (skill): Promise<LoadedSkill> => {
+      const content = skill.lazyContent && !skill.lazyContent.loaded
+        ? await skill.lazyContent.load()
+        : skill.lazyContent?.content ?? skill.definition.template ?? ""
+      // Registry discovery, explicit agent skill injection, and native Team
+      // adaptation must consume the same body. Do not rely on a lazy loader
+      // mutating the original object as a side effect of its first read.
+      return {
         ...skill,
-        definition: { ...skill.definition, template: await skill.lazyContent.load() },
-      }, directory)
-    }
-    return toV2SkillInfo(skill, directory)
-  }))
+        definition: { ...skill.definition, template: content },
+        lazyContent: { loaded: true, content, load: async () => content },
+      }
+    }))
+  const loaded = adaptV2TeamSkills(materialized, config)
+  const skills = loaded.map((skill) => toV2SkillInfo(skill, directory))
   return { skills, loaded }
 }
 

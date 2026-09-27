@@ -10,6 +10,7 @@ import { normalizeHookText } from "./hook-text"
 
 export interface PreCompactContext {
   sessionId: string
+  transcriptPath?: string
   cwd: string
 }
 
@@ -46,6 +47,7 @@ export async function executePreCompactHooks(
 
   const stdinData: PreCompactInput = {
     session_id: ctx.sessionId,
+    transcript_path: ctx.transcriptPath,
     cwd: ctx.cwd,
     hook_event_name: "PreCompact",
     hook_source: "opencode-plugin",

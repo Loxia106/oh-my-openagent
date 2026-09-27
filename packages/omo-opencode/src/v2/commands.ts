@@ -11,7 +11,7 @@ import { findRecentSessionPlanPathFromNativeMessages } from "../hooks/ulw-execut
 import { detectWorktreePath } from "../hooks/ulw-execute/worktree-detector"
 import { createPrDeliveryBlock, createWorktreeActiveBlock } from "../hooks/ulw-execute/worktree-block"
 import { log } from "../shared/logger"
-import { getV2ContinuationState, getV2GoalController } from "./lifecycle"
+import { flushV2WorkflowPolicy, getV2ContinuationState, getV2GoalController } from "./lifecycle"
 import {
 	createV2CommandDispatchGate,
 	ensureV2SessionAgent,
@@ -167,12 +167,14 @@ async function executeGoalCommand(
 				return
 			}
 			continuation.resume(sessionID)
+			await flushV2WorkflowPolicy(ctx, sessionID)
 			await submitV2CommandPrompt(ctx, input, `Continue working toward the active session goal. The goal is already resumed; do not replace it or reset its usage budget.\n\n${goal.objective}${continuationNote}`, undefined, assertActive)
 			return
 		}
 		case "setObjective": {
 			const goal = controller.setGoal(sessionID, parsed.objective)
 			continuation.resume(sessionID)
+			await flushV2WorkflowPolicy(ctx, sessionID)
 			const goalGuidance = GOAL_TEMPLATE.slice(0, GOAL_TEMPLATE.indexOf("\n## Your Task"))
 			const template = `<command-instruction>\n${goalGuidance}\n\n## Your Task\nThe goal has already been saved for this session. Begin working toward it now. Do not create or replace the goal again unless the user explicitly asks.\n</command-instruction>\n\n<user-task>\n${goal.objective}\n</user-task>${continuationNote}`
 			await submitV2CommandPrompt(ctx, input, template, undefined, assertActive)
@@ -189,8 +191,8 @@ async function executeCommand(
 	assertActive: AssertV2CommandActive,
 ): Promise<void> {
 	assertActive()
-	if (name === "hyperplan") {
-		await submitV2CommandNotice(ctx, input, "`/hyperplan` is unavailable in this OpenCode 2 adapter because the OMO team runtime is not implemented here.", assertActive)
+	if (name === "hyperplan" && config.team_mode?.enabled !== true) {
+		await submitV2CommandNotice(ctx, input, "`/hyperplan` requires OMO Team mode. Set `team_mode.enabled: true` in the OMO configuration and restart OpenCode.", assertActive)
 		return
 	}
 	if (name === "stop-continuation") {
@@ -198,6 +200,7 @@ async function executeCommand(
 		continuation.stop(input.sessionID)
 		continuation.clearPending(input.sessionID)
 		getV2GoalController(ctx).clearGoal(input.sessionID)
+		await flushV2WorkflowPolicy(ctx, input.sessionID)
 		await submitV2CommandNotice(ctx, input, "Continuation is stopped for this session and its goal was cleared. Project Boulder state and todos were preserved.", assertActive)
 		return
 	}
@@ -220,6 +223,7 @@ async function executeCommand(
 			return
 		}
 		getV2ContinuationState(ctx).resume(input.sessionID)
+		await flushV2WorkflowPolicy(ctx, input.sessionID)
 		const prompt = await buildUlwExecutePrompt(ctx, input, command, agent, new Date().toISOString(), assertActive)
 		assertActive()
 		await submitV2CommandPrompt(ctx, input, prompt, undefined, assertActive)
@@ -237,7 +241,7 @@ export async function registerV2Commands(
 ): Promise<() => Promise<void>> {
 	const commands = loadBuiltinCommands(config.disabled_commands, {
 		useRegisteredAgents: false,
-		teamModeEnabled: false,
+		teamModeEnabled: config.team_mode?.enabled === true,
 	})
 	const gate = createV2CommandDispatchGate()
 	let active = true

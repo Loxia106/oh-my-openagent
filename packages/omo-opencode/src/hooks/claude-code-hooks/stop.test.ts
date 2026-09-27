@@ -5,7 +5,7 @@ import * as dispatchHookModule from "./dispatch-hook"
 import * as logger from "../../shared/logger"
 import { executeStopHooks } from "./stop"
 
-const mockDispatchHook = mock(() =>
+const mockDispatchHook = mock((_stdinJson?: string) =>
   Promise.resolve({ exitCode: 0, stdout: "", stderr: "" })
 )
 
@@ -29,7 +29,7 @@ describe("executeStopHooks", () => {
     )
 
     spyOn(dispatchHookModule, "dispatchHook").mockImplementation(
-      async (_hook, _stdinJson, _cwd) => await mockDispatchHook()
+      async (_hook, stdinJson, _cwd) => await mockDispatchHook(stdinJson)
     )
     spyOn(logger, "log").mockImplementation(() => {})
   })
@@ -213,5 +213,31 @@ describe("executeStopHooks", () => {
 
     expect(result.block).toBe(false)
     expect(mockDispatchHook).toHaveBeenCalledTimes(2)
+  })
+
+  it("#given an explicit native Stop context #when dispatched #then omits the legacy todo path and reports active-state without global state", async () => {
+    let stdinData: Record<string, unknown> | undefined
+    let activeChange: boolean | undefined
+    mockDispatchHook.mockImplementation(async (stdinJson) => {
+      stdinData = JSON.parse(stdinJson ?? "{}") as Record<string, unknown>
+      return { exitCode: 0, stdout: JSON.stringify({ stop_hook_active: false }), stderr: "" }
+    })
+    const result = await executeStopHooks(createStopContext({
+      permissionMode: "default",
+      stopHookActive: true,
+      todoPath: null,
+      onStopHookActiveChange: (active) => { activeChange = active },
+    }), createConfig([
+      { matcher: "*", hooks: [{ type: "command", command: "explicit-context" }] },
+    ]))
+
+    expect(result.block).toBe(false)
+    expect(stdinData).toMatchObject({
+      session_id: "test-session",
+      permission_mode: "default",
+      stop_hook_active: true,
+    })
+    expect(stdinData).not.toHaveProperty("todo_path")
+    expect(activeChange).toBe(false)
   })
 })

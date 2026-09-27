@@ -21,9 +21,12 @@ import { createSisyphusJuniorAgentWithOverrides } from "../agents/sisyphus-junio
 import { getPrometheusPrompt, PROMETHEUS_PERMISSION } from "../agents/prometheus"
 import { buildAvailableSkills } from "../agents/builtin-agents/available-skills"
 import { applyOverrides } from "../agents/builtin-agents/agent-overrides"
+import { resolvePromptAppend } from "../agents/builtin-agents/resolve-file-uri"
 import { applyEnvironmentContext } from "../agents/builtin-agents/environment-context"
-import { resolveAgentSkills } from "../agents/agent-skill-resolution"
 import { collectDisabledSkillAliases } from "../plugin/skill-context"
+import { isDisabledSkillAlias } from "../features/opencode-skill-loader"
+import { injectGitMasterConfig } from "../features/opencode-skill-loader/skill-content"
+import { matchSkillByName } from "@oh-my-opencode/skills-loader-core/skill/skill-matcher"
 import { isTaskSystemEnabled } from "../shared"
 import { mergeCategories } from "../shared/merge-categories"
 import { CATEGORY_DESCRIPTIONS } from "../tools/delegate-task/constants"
@@ -83,6 +86,12 @@ function isDisabled(config: OhMyOpenCodeConfig, name: string): boolean {
     getOverride(config, name)?.disable === true
 }
 
+/** Whether a builtin OMO agent is enabled by its native config gates. */
+export function isV2BuiltinAgentEnabled(config: OhMyOpenCodeConfig, name: string): boolean {
+	return (BUILTIN_AGENT_NAMES as readonly string[]).includes(name) && !isDisabled(config, name) &&
+		!(name === "prometheus" && config.sisyphus_agent?.planner_enabled === false)
+}
+
 function createBaseAgent(input: {
   name: (typeof BUILTIN_AGENT_NAMES)[number]
   model: string
@@ -91,8 +100,9 @@ function createBaseAgent(input: {
   categories: AvailableCategory[]
   userCategories: OhMyOpenCodeConfig["categories"]
   useTaskSystem: boolean
+  disabledTools?: readonly string[]
 }): AgentConfig {
-  const { name, model, agents, skills, categories, userCategories, useTaskSystem } = input
+  const { name, model, agents, skills, categories, userCategories, useTaskSystem, disabledTools } = input
   switch (name) {
     case "sisyphus":
       return createSisyphusAgent(model, agents, undefined, skills, categories, useTaskSystem)
@@ -103,7 +113,7 @@ function createBaseAgent(input: {
         model,
         description: "Strategic planning agent that interviews, analyzes the task, and creates an actionable plan. (Prometheus - OhMyOpenCode)",
         mode: "primary",
-        prompt: getPrometheusPrompt(model),
+        prompt: getPrometheusPrompt(model, disabledTools),
         permission: PROMETHEUS_PERMISSION as AgentConfig["permission"],
         color: "#FF5722",
       }
@@ -124,6 +134,47 @@ function createBaseAgent(input: {
     case "metis": return createMetisAgent(model)
     case "momus": return createMomusAgent(model)
   }
+}
+
+/** V1's Prometheus builder treats both prompt fields as additions to its base. */
+function applyPrometheusOverrides(
+  base: AgentConfig,
+  override: AgentOverrideConfig | undefined,
+  mergedCategories: Parameters<typeof applyOverrides>[2],
+  directory: string,
+): AgentConfig {
+  if (!override) return base
+  const { prompt, prompt_append, ...agentFields } = override
+  let result = applyOverrides(base, agentFields, mergedCategories, directory)
+  if (typeof result.prompt !== "string") return result
+  for (const addition of [prompt, prompt_append]) {
+    if (addition) result = { ...result, prompt: `${result.prompt}\n${resolvePromptAppend(addition, directory)}` }
+  }
+  return result
+}
+
+/**
+ * V1 exposed synthetic `bg_` handles, while the native v2 background tools take
+ * the child session's `ses_` ID directly. Rewrite only the built-in factory
+ * prompt before user prompt overrides/appends and loaded skill bodies are
+ * applied; never touch a user's request or custom agent prompt.
+ */
+function adaptNativeBackgroundSessionPrompt(prompt: string): string {
+  const lines = prompt.split("\n").map((line) => {
+    if (line.includes("background task IDs") && line.includes("continuation session IDs") &&
+      line.includes("background_output") && line.includes("task(") && line.includes("bg_")) {
+      const indentation = line.match(/^\s*/)?.[0] ?? ""
+      return `${indentation}Use the native child session ID (\`ses_...\`) for \`background_output(task_id=\"ses_...\")\`, \`background_cancel(taskId=\"ses_...\")\`, and \`task(task_id=\"ses_...\")\` follow-ups.`
+    }
+    return line.replace(/\bbg_(?:\.\.\.|[A-Za-z0-9_-]+)/g, (id) => `ses_${id.slice(3)}`)
+  })
+  return lines.join("\n")
+}
+
+function adaptNativeBuiltInPrompt(config: AgentConfig): AgentConfig {
+  return typeof config.prompt === "string"
+    ? { ...config, prompt: adaptNativeBackgroundSessionPrompt(config.prompt) }
+    : config
 }
 
 const LOOKER_LEGACY_ATTACHMENT_INSTRUCTION = "During look_at invocations, the file or image is already attached to the message. Analyze the attachment directly. Never call tools, never spawn other agents, and never try to load the file by path."
@@ -157,6 +208,7 @@ export function toV2PermissionRules(
   config: AgentConfig,
   agentName = "unknown",
   onConflict?: (conflict: V2PermissionConflict) => void,
+  agentRestrictedSkillIDs: readonly string[] = [],
 ): NativeAgentInfo["permissions"] {
   const permissions = (config.permission ?? {}) as Record<string, unknown>
   const tools = (config.tools ?? {}) as Record<string, boolean>
@@ -197,6 +249,14 @@ export function toV2PermissionRules(
     }
   }
   for (const [action, enabled] of Object.entries(tools)) add(action, "*", enabled ? "allow" : "deny")
+
+  // OpenCode skill availability and the native skill executor both evaluate
+  // the ordered `skill` permission rules. Append these denials after authored
+  // permissions and tool aliases so a broad `skill: allow` cannot expose a
+  // skill whose definition is restricted to another agent.
+  for (const skillID of new Set(agentRestrictedSkillIDs)) {
+    rules.push({ action: "skill", resource: skillID, effect: "deny" })
+  }
 
   return rules
 }
@@ -323,15 +383,60 @@ function customAgentConfigsWithModelPolicy(
  * Provenance matters: custom plugin/user skills may intentionally share a
  * name with a builtin that this runtime cannot support.
  */
-function nativePromptSkills(available: AvailableSkill[], loadedSkills: readonly LoadedSkill[]): AvailableSkill[] {
+function nativePromptSkills(
+  available: AvailableSkill[],
+  loadedSkills: readonly LoadedSkill[],
+  teamModeEnabled: boolean | undefined,
+  agentName: string,
+): AvailableSkill[] {
   const winners = new Map(loadedSkills.map((skill) => [skill.name.toLowerCase(), skill]))
   return available.filter((skill) => {
     const name = skill.name.toLowerCase()
     const winner = winners.get(name)
     if (winner && disablesModelInvocation(winner)) return false
+    if (winner?.definition.agent && winner.definition.agent !== agentName) return false
     if (!V2_UNSUPPORTED_TEAM_PROMPT_SKILLS.has(name)) return true
+    if (teamModeEnabled === true) return true
     return winner !== undefined && winner.scope !== "builtin"
   })
+}
+
+type AgentConfigWithExplicitSkills = AgentConfig & { skills?: string[] }
+
+/**
+ * Resolve explicitly configured agent skills from the same merged catalog that
+ * is registered with native OpenCode. The legacy synchronous resolver reads
+ * only builtin definitions, which loses project overrides and V2-adapted
+ * builtin content. Explicit selection remains valid for manual-only skills;
+ * disabled aliases and agent-scoped definitions still apply.
+ */
+function resolveV2AgentSkills(
+  config: AgentConfig,
+  agentName: string,
+  loadedSkills: readonly LoadedSkill[],
+  options: { disabledSkills: Set<string>; gitMasterConfig: OhMyOpenCodeConfig["git_master"] },
+): AgentConfig {
+  const { skills, ...configWithoutSkills } = config as AgentConfigWithExplicitSkills
+  if (!skills?.length) return configWithoutSkills
+
+  const catalog = [...loadedSkills]
+  const resolved = new Map<string, string>()
+  for (const requestedName of skills) {
+    const skill = matchSkillByName(catalog, requestedName)
+    if (!skill || isDisabledSkillAlias(skill, options.disabledSkills)) continue
+    if (skill.definition.agent && skill.definition.agent !== agentName) continue
+    let template = skill.definition.template ?? skill.lazyContent?.content ?? ""
+    if (!template) continue
+    if (skill.name === "git-master") template = injectGitMasterConfig(template, options.gitMasterConfig)
+    resolved.set(requestedName, template)
+  }
+
+  if (resolved.size === 0) return configWithoutSkills
+  const skillContent = Array.from(resolved.values()).join("\n\n")
+  return {
+    ...configWithoutSkills,
+    prompt: skillContent + (configWithoutSkills.prompt ? "\n\n" + configWithoutSkills.prompt : ""),
+  }
 }
 
 function catalogPrompts(input: {
@@ -349,15 +454,24 @@ function catalogPrompts(input: {
   }))
   const disabledSkills = collectDisabledSkillAliases(config)
   const modelInvocableSkills = loadedSkills.filter((skill) => !disablesModelInvocation(skill))
-  const availableSkills = nativePromptSkills(buildAvailableSkills(
-    [...modelInvocableSkills],
-    config.browser_automation_engine?.provider,
-    disabledSkills,
-    config.team_mode?.enabled,
-  ), loadedSkills)
+  const availableSkillsByAgent = new Map<string, AvailableSkill[]>()
+  const availableSkillsFor = (agentName: string) => {
+    const cached = availableSkillsByAgent.get(agentName)
+    if (cached) return cached
+    const available = nativePromptSkills(buildAvailableSkills(
+      [...modelInvocableSkills],
+      config.browser_automation_engine?.provider,
+      disabledSkills,
+      config.team_mode?.enabled,
+      agentName,
+    ), loadedSkills, config.team_mode?.enabled, agentName)
+    availableSkillsByAgent.set(agentName, available)
+    return available
+  }
   const resolutions = new Map<string, ReturnType<typeof resolveV2AgentModel>>()
   const promptModels = new Map<string, string>()
   for (const name of BUILTIN_AGENT_NAMES) {
+    if (!isV2BuiltinAgentEnabled(config, name)) continue
     const override = getOverride(config, name)
     const configured = agentModelChain(override)
     const category = override?.category ? categoryModelChain(mergedCategories[override.category]) : { fallbacks: [] as V2ConfiguredModel[] }
@@ -379,7 +493,7 @@ function catalogPrompts(input: {
 
   const preliminary = new Map<string, AgentConfig>()
   for (const name of BUILTIN_AGENT_NAMES) {
-    if (isDisabled(config, name)) continue
+    if (!isV2BuiltinAgentEnabled(config, name)) continue
     if (resolutions.get(name)?.blocked) continue
     const model = promptModels.get(name)!
     if (name === "hephaestus" && !isHephaestusSupportedModel(model)) {
@@ -393,10 +507,11 @@ function catalogPrompts(input: {
         name,
         model,
         agents: [],
-        skills: availableSkills,
+        skills: availableSkillsFor(name),
         categories: availableCategories,
         userCategories: config.categories,
         useTaskSystem: isTaskSystemEnabled(config),
+        disabledTools: config.disabled_tools,
       })
     } catch (error) {
       if (name === "hephaestus") {
@@ -408,20 +523,18 @@ function catalogPrompts(input: {
         name,
         model: promptFallbackModel(name) ?? "openai/gpt-5.6-sol",
         agents: [],
-        skills: availableSkills,
+        skills: availableSkillsFor(name),
         categories: availableCategories,
         userCategories: config.categories,
         useTaskSystem: isTaskSystemEnabled(config),
+        disabledTools: config.disabled_tools,
       })
     }
-    let built = applyOverrides(base, override, mergedCategories, directory)
+    let built = name === "prometheus"
+      ? applyPrometheusOverrides(base, override, mergedCategories, directory)
+      : applyOverrides(base, override, mergedCategories, directory)
     if (name === "librarian") built = applyEnvironmentContext(built, directory, { disableOmoEnv: false })
-    built = resolveAgentSkills(built, {
-      gitMasterConfig: config.git_master,
-      browserProvider: config.browser_automation_engine?.provider,
-      disabledSkills,
-      teamModeEnabled: config.team_mode?.enabled,
-    })
+    built = resolveV2AgentSkills(built, name, loadedSkills, { disabledSkills, gitMasterConfig: config.git_master })
     preliminary.set(name, built)
   }
 
@@ -434,7 +547,7 @@ function catalogPrompts(input: {
 
   const result: Record<string, AgentConfig> = {}
   for (const name of BUILTIN_AGENT_NAMES) {
-    if (isDisabled(config, name)) continue
+    if (!isV2BuiltinAgentEnabled(config, name)) continue
     const resolution = resolutions.get(name)
     if (resolution?.blocked) continue
     const override = getOverride(config, name)
@@ -449,10 +562,11 @@ function catalogPrompts(input: {
         name,
         model,
         agents: visibleAgents,
-        skills: availableSkills,
+        skills: availableSkillsFor(name),
         categories: availableCategories,
         userCategories: config.categories,
         useTaskSystem: isTaskSystemEnabled(config),
+        disabledTools: config.disabled_tools,
       })
     } catch (error) {
       if (name === "hephaestus") {
@@ -464,24 +578,23 @@ function catalogPrompts(input: {
         name,
         model: promptFallbackModel(name) ?? "openai/gpt-5.6-sol",
         agents: visibleAgents,
-        skills: availableSkills,
+        skills: availableSkillsFor(name),
         categories: availableCategories,
         userCategories: config.categories,
         useTaskSystem: isTaskSystemEnabled(config),
+        disabledTools: config.disabled_tools,
       })
     }
-    let built = applyOverrides(base, override, mergedCategories, directory)
+    base = adaptNativeBuiltInPrompt(base)
+    let built = name === "prometheus"
+      ? applyPrometheusOverrides(base, override, mergedCategories, directory)
+      : applyOverrides(base, override, mergedCategories, directory)
     if (name === "librarian") {
       built = applyEnvironmentContext(built, directory, {
         disableOmoEnv: config.experimental?.disable_omo_env ?? false,
       })
     }
-    built = resolveAgentSkills(built, {
-      gitMasterConfig: config.git_master,
-      browserProvider: config.browser_automation_engine?.provider,
-      disabledSkills,
-      teamModeEnabled: config.team_mode?.enabled,
-    })
+    built = resolveV2AgentSkills(built, name, loadedSkills, { disabledSkills, gitMasterConfig: config.git_master })
 
     if (name === "hephaestus") {
       const resolvedModel = typeof built.model === "string" ? built.model : resolution?.model
@@ -511,11 +624,12 @@ function toNativeAgentConfig(
   name: string,
   config: AgentConfig,
   onPermissionConflict?: (conflict: V2PermissionConflict) => void,
+  agentRestrictedSkillIDs: readonly string[] = [],
 ): Partial<NativeAgentInfo> {
   const source = config as AgentConfig & Record<string, unknown>
   const model = toV2ModelRef(typeof source.model === "string" ? source.model : undefined, typeof source.variant === "string" ? source.variant : undefined)
   const settings = nativeSettings(config)
-  const permissions = toV2PermissionRules(config, name, onPermissionConflict)
+  const permissions = toV2PermissionRules(config, name, onPermissionConflict, agentRestrictedSkillIDs)
   return {
     id: name as NativeAgentInfo["id"],
     name: (typeof source.displayName === "string" ? source.displayName : DISPLAY_NAMES[name as keyof typeof DISPLAY_NAMES] ?? name) as NativeAgentInfo["name"],
@@ -537,14 +651,94 @@ function toNativeAgentConfig(
   }
 }
 
-export function buildV2AgentConfigs(input: {
+export type BuildV2AgentConfigsInput = {
   config: OhMyOpenCodeConfig
   catalog: V2ModelCatalogSnapshot
   loadedSkills: readonly LoadedSkill[]
   directory: string
   onBlocked?: (name: string, diagnostic: string) => void
-}): Record<string, AgentConfig> {
+}
+
+export type V2BuiltinAgentPromptRenderer = (agentName: string, model: string) => string | undefined
+
+export function buildV2AgentConfigs(input: BuildV2AgentConfigsInput): Record<string, AgentConfig> {
   return catalogPrompts(input)
+}
+
+/**
+ * Render a native request-time prompt for one registered OMO builtin using the
+ * same factory, override, category, skill, and environment pipeline as the
+ * registration-time config. The returned AgentConfig is used only for its
+ * prompt; its model and permissions are not installed into the host registry.
+ */
+export function createV2BuiltinAgentPromptRenderer(input: BuildV2AgentConfigsInput): V2BuiltinAgentPromptRenderer {
+  const { config, loadedSkills, directory } = input
+  const registeredConfigs = catalogPrompts(input)
+  const mergedCategories = mergeCategories(config.categories)
+  const availableCategories: AvailableCategory[] = Object.entries(mergedCategories).map(([name, category]) => ({
+    name,
+    description: category.description ?? CATEGORY_DESCRIPTIONS[name] ?? "General tasks",
+  }))
+  const disabledSkills = collectDisabledSkillAliases(config)
+  const modelInvocableSkills = loadedSkills.filter((skill) => !disablesModelInvocation(skill))
+  const availableSkillsByAgent = new Map<string, AvailableSkill[]>()
+  const availableSkillsFor = (agentName: string) => {
+    const cached = availableSkillsByAgent.get(agentName)
+    if (cached) return cached
+    const available = nativePromptSkills(buildAvailableSkills(
+      [...modelInvocableSkills],
+      config.browser_automation_engine?.provider,
+      disabledSkills,
+      config.team_mode?.enabled,
+      agentName,
+    ), loadedSkills, config.team_mode?.enabled, agentName)
+    availableSkillsByAgent.set(agentName, available)
+    return available
+  }
+  const visibleAgents: AvailableAgent[] = []
+  for (const [name, metadata] of Object.entries(PROMPT_METADATA)) {
+    const registered = registeredConfigs[name]
+    if (!registered || !metadata) continue
+    visibleAgents.push({ name, description: registered.description ?? "", metadata })
+  }
+
+  return (agentName, model) => {
+    if (!(BUILTIN_AGENT_NAMES as readonly string[]).includes(agentName)) return undefined
+    const name = agentName as (typeof BUILTIN_AGENT_NAMES)[number]
+    if (!registeredConfigs[name] || isDisabled(config, name)) return undefined
+    if (name === "hephaestus" && !isHephaestusSupportedModel(model)) {
+      return undefined
+    }
+
+    let base: AgentConfig
+    try {
+      base = createBaseAgent({
+        name,
+        model,
+        agents: visibleAgents,
+        skills: availableSkillsFor(name),
+        categories: availableCategories,
+        userCategories: config.categories,
+        useTaskSystem: isTaskSystemEnabled(config),
+        disabledTools: config.disabled_tools,
+      })
+    } catch (error) {
+      log(`[v2 agent] Could not render ${name} prompt for runtime model ${model}; retaining its registered prompt.`, error)
+      return undefined
+    }
+    base = adaptNativeBuiltInPrompt(base)
+    const override = getOverride(config, name)
+    let rendered = name === "prometheus"
+      ? applyPrometheusOverrides(base, override, mergedCategories, directory)
+      : applyOverrides(base, override, mergedCategories, directory)
+    if (name === "librarian") {
+      rendered = applyEnvironmentContext(rendered, directory, {
+        disableOmoEnv: config.experimental?.disable_omo_env ?? false,
+      })
+    }
+    rendered = resolveV2AgentSkills(rendered, name, loadedSkills, { disabledSkills, gitMasterConfig: config.git_master })
+    return typeof rendered.prompt === "string" ? rendered.prompt : undefined
+  }
 }
 
 export async function registerV2Agents(
@@ -604,8 +798,10 @@ export async function registerV2Agents(
         const configuredAgent = configs[requestedDefault]
         const existingAgent = editor.get(requestedDefault)
         const mode = configuredAgent?.mode ?? existingAgent?.mode
-        const enabledPrimary = !blocked.has(requestedDefault) && (configuredAgent !== undefined || existingAgent !== undefined) &&
-          (mode === "primary" || mode === "all") && !isDisabled(config, requestedDefault)
+      const configuredBuiltin = (BUILTIN_AGENT_NAMES as readonly string[]).includes(requestedDefault)
+      const enabledPrimary = !blocked.has(requestedDefault) && (configuredAgent !== undefined || existingAgent !== undefined) &&
+          (mode === "primary" || mode === "all") &&
+          (configuredBuiltin ? isV2BuiltinAgentEnabled(config, requestedDefault) : !isDisabled(config, requestedDefault))
         if (enabledPrimary) {
           editor.default(requestedDefault)
         } else if (!defaultDiagnosticLogged) {
@@ -617,15 +813,18 @@ export async function registerV2Agents(
         }
       }
       for (const name of BUILTIN_AGENT_NAMES) {
-        if (isDisabled(config, name)) editor.remove(name)
+        if (!isV2BuiltinAgentEnabled(config, name)) editor.remove(name)
       }
       for (const [name, agentConfig] of Object.entries(configs)) {
+        const restrictedSkillIDs = loadedSkills
+          .filter((skill) => skill.definition.agent && skill.definition.agent !== name)
+          .map((skill) => skill.name)
         const next = toNativeAgentConfig(name, agentConfig, (conflict) => {
           const key = `${conflict.agent}\u0000${conflict.action}\u0000${conflict.resource}`
           if (reportedPermissionConflicts.has(key)) return
           reportedPermissionConflicts.add(key)
           log(`[v2 agent] Conflicting permission aliases for ${conflict.agent} ${conflict.action} ${conflict.resource} were reduced to the stricter "${conflict.selected}" effect.`)
-        })
+        }, restrictedSkillIDs)
         editor.update(name, (agent) => {
           const added = next.permissions ?? []
           agent.id = next.id as NativeAgentInfo["id"]

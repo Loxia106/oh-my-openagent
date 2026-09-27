@@ -4,6 +4,7 @@ import type { ProviderEditor } from "@opencode/plugin/promise/provider"
 import type { OhMyOpenCodeConfig } from "../config"
 import { log } from "../shared/logger"
 import { registerV2Agents } from "./agents"
+import { registerV2AgentPipelineHooks } from "./agent-pipeline-hooks"
 import { registerV2Mcp } from "./mcp"
 import { V2ModelCatalog } from "./model-resolution"
 import { loadV2SkillCatalog, registerV2Skills } from "./skills"
@@ -111,6 +112,7 @@ export async function registerV2Registries(
     cleanups.push(await registerV2Skills(ctx, skillCatalog, config))
     cleanups.push(await registerV2Mcp(ctx, config, directory))
     cleanups.push(await registerV2Agents(ctx, config, skillCatalog.loaded, catalog))
+    cleanups.push(await registerV2AgentPipelineHooks(ctx, config, skillCatalog.loaded, catalog))
 
     const events = ctx.event.subscribe({ signal: controller.signal })
     const eventTask = (async () => {

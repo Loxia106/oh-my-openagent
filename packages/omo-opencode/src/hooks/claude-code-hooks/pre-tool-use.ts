@@ -15,6 +15,8 @@ export interface PreToolUseContext {
   toolInput: Record<string, unknown>
   cwd: string
   transcriptPath?: string
+  /** Preserve native tool schema keys when adapting plugin V2 inputs. */
+  preserveInputKeys?: boolean
   toolUseId?: string
   permissionMode?: "default" | "plan" | "acceptEdits" | "bypassPermissions"
 }
@@ -66,7 +68,7 @@ export async function executePreToolUseHooks(
     permission_mode: ctx.permissionMode ?? "bypassPermissions",
     hook_event_name: "PreToolUse",
     tool_name: transformedToolName,
-    tool_input: objectToSnakeCase(ctx.toolInput),
+    tool_input: ctx.preserveInputKeys ? ctx.toolInput : objectToSnakeCase(ctx.toolInput),
     tool_use_id: ctx.toolUseId,
     hook_source: "opencode-plugin",
   }
@@ -168,7 +170,7 @@ export async function executePreToolUseHooks(
           // "allow" — accumulate modifiedInput and common fields, continue to next hook
           if (modifiedInput) {
             accumulatedModifiedInput = { ...accumulatedModifiedInput, ...modifiedInput }
-            Object.assign(stdinData.tool_input, objectToSnakeCase(modifiedInput))
+            Object.assign(stdinData.tool_input, ctx.preserveInputKeys ? modifiedInput : objectToSnakeCase(modifiedInput))
           }
           if (output.continue !== undefined) accumulatedCommonFields.continue = output.continue
           if (output.stopReason !== undefined) accumulatedCommonFields.stopReason = normalizeHookText(output.stopReason)

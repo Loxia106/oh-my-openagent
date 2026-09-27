@@ -12,7 +12,7 @@ import {
 	writeBoulderState,
 } from "../features/boulder-state"
 import { BuiltinCommandNameSchema } from "../config/schema/commands"
-import { getV2ContinuationState, getV2GoalController } from "./lifecycle"
+import { getV2ContinuationState, getV2GoalController, registerV2LifecycleHooks } from "./lifecycle"
 import { getV2TodoState } from "./task-state"
 import { expandCommandTemplate, registerV2Commands } from "./commands"
 import type { NativeCommandInvocation } from "./command-dispatch"
@@ -63,7 +63,7 @@ function createHost(
 	let historyCalls = 0
 	let registrationDisposed = false
 	const ctx = unsafeTestValue<Plugin.Context>({
-		location: { directory },
+		location: { directory, project: { id: "command-test-project" } },
 		storage,
 		agent: {
 			list: async () => ({ data: agentNames.map((id) => ({ id })) }),
@@ -125,7 +125,17 @@ async function createDirectory(prefix: string): Promise<string> {
 async function register(host: ReturnType<typeof createHost>, config: OhMyOpenCodeConfig = {}) {
 	// Builtin-command tests should not consult the real user's Claude directories.
 	const testConfig = { ...config, claude_code: { ...config.claude_code, commands: false, plugins: false } }
-	const cleanup = await registerV2Commands(host.ctx, testConfig)
+	// Production initializes durable workflow state before registering commands.
+	// These tests isolate command dispatch from event-driven continuations.
+	const cleanupLifecycle = await registerV2LifecycleHooks(host.ctx, { disabled_hooks: [
+		"stop-continuation-guard", "compaction-context-injector", "compaction-todo-preserver",
+		"atlas", "goal", "todo-continuation-enforcer",
+	] })
+	const cleanupCommands = await registerV2Commands(host.ctx, testConfig)
+	const cleanup = async () => {
+		await cleanupCommands()
+		await cleanupLifecycle()
+	}
 	return { cleanup, commands: host.commands }
 }
 
@@ -374,6 +384,31 @@ describe("native OpenCode 2 builtin commands", () => {
 		await cleanup()
 	})
 
+	test("stop reports success only after its durable transition is stored and propagates write failure", async () => {
+		const directory = await createDirectory("omo-v2-command-durable-stop-")
+		const host = createHost(directory)
+		const { cleanup, commands } = await register(host)
+		const entered = deferred<void>()
+		const persisted = deferred<void>()
+		const originalSet = host.storage.set
+		host.storage.set = async (key, value) => {
+			entered.resolve()
+			await persisted.promise
+			await originalSet(key, value)
+		}
+		const invocation = commands.get("stop-continuation")!.execute(commandInput(""))
+		await entered.promise
+		expect(getV2ContinuationState(host.ctx).isStopped("ses-current")).toBe(true)
+		expect(host.syntheticCalls).toHaveLength(0)
+		persisted.resolve()
+		await invocation
+		expect(host.syntheticCalls).toHaveLength(1)
+		host.storage.set = async () => { throw new Error("storage write unavailable") }
+		await expect(commands.get("stop-continuation")!.execute(commandInput("again"))).rejects.toThrow("storage write unavailable")
+		expect(host.syntheticCalls).toHaveLength(1)
+		await cleanup()
+	})
+
 	test("honors goal.enabled and disabled_commands, and reports /hyperplan unavailable", async () => {
 		const directory = await createDirectory("omo-v2-command-gates-")
 		const host = createHost(directory)
@@ -387,9 +422,24 @@ describe("native OpenCode 2 builtin commands", () => {
 		expect(host.promptCalls).toEqual([])
 		expect(host.syntheticCalls).toHaveLength(2)
 		expect((host.syntheticCalls[0] as { text: string }).text).toContain("goal.enabled: true")
-		expect((host.syntheticCalls[1] as { text: string }).text).toContain("team runtime is not implemented")
+		expect((host.syntheticCalls[1] as { text: string }).text).toContain("team_mode.enabled: true")
 		expect(getV2GoalController(host.ctx).getGoal("ses-current")).toBeNull()
 		expect(BuiltinCommandNameSchema.parse("handoff")).toBe("handoff")
+		await cleanup()
+	})
+
+	test("dispatches Hyperplan with native Team enabled and keeps request arguments literal", async () => {
+		const directory = await createDirectory("omo-v2-command-hyperplan-")
+		const host = createHost(directory)
+		const { cleanup, commands } = await register(host, { team_mode: { enabled: true } } as OhMyOpenCodeConfig)
+		const request = "Plan the release $SESSION_ID"
+		await commands.get("hyperplan")!.execute(commandInput(request))
+		expect(host.syntheticCalls).toEqual([])
+		expect(host.promptCalls).toHaveLength(1)
+		const text = (host.promptCalls[0] as { text: string }).text
+		expect(text).toContain('skill(name="hyperplan")')
+		expect(text).toContain(request)
+		expect(text).toContain("team_create")
 		await cleanup()
 	})
 

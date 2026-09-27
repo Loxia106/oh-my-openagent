@@ -7,6 +7,7 @@ import type { OhMyOpenCodeConfig } from "../config"
 import { createToolCallSignature, resolveCircuitBreakerSettings } from "../features/background-agent/loop-detector"
 import { log } from "../shared/logger"
 import type { V2SubagentRunState } from "./task-state"
+import type { VerifiedLogicalParentResolver } from "./background-admission"
 
 const STATE_PREFIX = "oh-my-openagent:v2:background-tool-policy:"
 const STATE_VERSION = 1
@@ -154,6 +155,7 @@ async function getVerifiedChild(
 	ctx: Plugin.Context,
 	runs: Pick<V2SubagentRunState, "get">,
 	sessionID: string,
+	resolveLogicalParent?: VerifiedLogicalParentResolver,
 ): Promise<VerifiedChild | undefined> {
 	let run: Awaited<ReturnType<V2SubagentRunState["get"]>>
 	try {
@@ -175,7 +177,9 @@ async function getVerifiedChild(
 		log("[v2 background tool policy] Failed to verify delegated session metadata; blocking tool execution.", { sessionID, parentSessionID: run.parentSessionID, error })
 		throw new ToolError({ message: "Unable to verify this delegated session's ownership and location; this tool call was blocked before execution." })
 	}
-	if (child.id !== sessionID || parent.id !== run.parentSessionID || child.parentID !== parent.id) return undefined
+	if (child.id !== sessionID || parent.id !== run.parentSessionID) return undefined
+	const parentID = child.parentID ?? await resolveLogicalParent?.(sessionID)
+	if (parentID !== parent.id) return undefined
 	if (child.projectID !== parent.projectID || child.projectID !== ctx.location.project.id) return undefined
 	let contextDirectory: string
 	let childDirectory: string
@@ -278,11 +282,12 @@ export async function registerV2BackgroundToolPolicy(
 	ctx: Plugin.Context,
 	config: OhMyOpenCodeConfig,
 	runs: Pick<V2SubagentRunState, "get">,
+	resolveLogicalParent?: VerifiedLogicalParentResolver,
 ): Promise<V2BackgroundToolPolicy> {
 	let disposed = false
 	const before = async (event: BeforeEvent) => {
 		if (disposed) return
-		const owned = await getVerifiedChild(ctx, runs, event.sessionID)
+		const owned = await getVerifiedChild(ctx, runs, event.sessionID, resolveLogicalParent)
 		if (!owned || disposed) return
 		const key = stateKey(owned.locationID, event.sessionID)
 		const result = await serialize(ctx.storage, key, async () => {

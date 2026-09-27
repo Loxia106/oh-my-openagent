@@ -1,5 +1,6 @@
 import type {
   PostToolUseInput,
+  PostToolUseFailureInput,
   PostToolUseOutput,
   ClaudeHooksConfig,
 } from "./types"
@@ -22,6 +23,12 @@ export interface PostToolUseContext {
   toolOutput: Record<string, unknown>
   cwd: string
   transcriptPath?: string  // Fallback for append-based transcript
+  /** Preserve native tool schema keys when adapting plugin V2 inputs. */
+  preserveInputKeys?: boolean
+  /** Preserve native result keys when adapting plugin V2 outputs. */
+  preserveOutputKeys?: boolean
+  hookEventName?: "PostToolUse" | "PostToolUseFailure"
+  failure?: { message: string; isInterrupt?: boolean }
   toolUseId?: string
   client?: PostToolUseClient
   permissionMode?: "default" | "plan" | "acceptEdits" | "bypassPermissions"
@@ -56,7 +63,8 @@ export async function executePostToolUseHooks(
   }
 
   const transformedToolName = transformToolName(ctx.toolName)
-  const matchers = findMatchingHooks(config, "PostToolUse", transformedToolName)
+  const hookEventName = ctx.hookEventName ?? "PostToolUse"
+  const matchers = findMatchingHooks(config, hookEventName, transformedToolName)
   if (matchers.length === 0) {
     return { block: false }
   }
@@ -76,19 +84,29 @@ export async function executePostToolUseHooks(
       )
     }
 
-    const stdinData: PostToolUseInput = {
+    const common = {
       session_id: ctx.sessionId,
       // Use temp transcript if available, otherwise fallback to append-based
       transcript_path: tempTranscriptPath ?? ctx.transcriptPath,
       cwd: ctx.cwd,
       permission_mode: ctx.permissionMode ?? "bypassPermissions",
-      hook_event_name: "PostToolUse",
       tool_name: transformedToolName,
-      tool_input: objectToSnakeCase(ctx.toolInput),
-      tool_response: objectToSnakeCase(ctx.toolOutput),
+      tool_input: ctx.preserveInputKeys ? ctx.toolInput : objectToSnakeCase(ctx.toolInput),
       tool_use_id: ctx.toolUseId,
-      hook_source: "opencode-plugin",
+      hook_source: "opencode-plugin" as const,
     }
+    const stdinData: PostToolUseInput | PostToolUseFailureInput = hookEventName === "PostToolUseFailure"
+      ? {
+          ...common,
+          hook_event_name: "PostToolUseFailure",
+          error: ctx.failure?.message ?? "Tool failed",
+          ...(ctx.failure?.isInterrupt ? { is_interrupt: true } : {}),
+        }
+      : {
+          ...common,
+          hook_event_name: "PostToolUse",
+          tool_response: ctx.preserveOutputKeys ? ctx.toolOutput : objectToSnakeCase(ctx.toolOutput),
+        }
 
     const messages: string[] = []
     const warnings: string[] = []
@@ -102,8 +120,8 @@ export async function executePostToolUseHooks(
          if (hook.type !== "command" && hook.type !== "http") continue
 
         const hookName = getHookIdentifier(hook)
-        if (isHookCommandDisabled("PostToolUse", hookName, extendedConfig ?? null)) {
-          log("PostToolUse hook command skipped (disabled by config)", { command: hookName, toolName: ctx.toolName })
+        if (isHookCommandDisabled(hookEventName, hookName, extendedConfig ?? null)) {
+          log(`${hookEventName} hook command skipped (disabled by config)`, { command: hookName, toolName: ctx.toolName })
           continue
         }
 

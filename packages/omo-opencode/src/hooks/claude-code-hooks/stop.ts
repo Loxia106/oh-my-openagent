@@ -35,6 +35,10 @@ export interface StopContext {
   transcriptPath?: string
   permissionMode?: "default" | "acceptEdits" | "bypassPermissions"
   stopHookActive?: boolean
+  /** Explicit path override. Null intentionally suppresses the legacy global todo path. */
+  todoPath?: string | null
+  /** When supplied, keep stop state owned by the caller instead of module-global legacy state. */
+  onStopHookActiveChange?: (active: boolean) => void
 }
 
 export interface StopResult {
@@ -69,8 +73,8 @@ export async function executeStopHooks(
     cwd: ctx.cwd,
     permission_mode: ctx.permissionMode ?? "bypassPermissions",
     hook_event_name: "Stop",
-    stop_hook_active: stopHookActiveState.get(ctx.sessionId) ?? false,
-    todo_path: getTodoPath(ctx.sessionId),
+    stop_hook_active: ctx.stopHookActive ?? stopHookActiveState.get(ctx.sessionId) ?? false,
+    todo_path: ctx.todoPath === null ? undefined : ctx.todoPath ?? getTodoPath(ctx.sessionId),
     hook_source: "opencode-plugin",
   }
 
@@ -101,7 +105,8 @@ export async function executeStopHooks(
          try {
            const output = JSON.parse(result.stdout || "{}") as StopOutput
            if (output.stop_hook_active !== undefined) {
-             stopHookActiveState.set(ctx.sessionId, output.stop_hook_active)
+             if (ctx.onStopHookActiveChange) ctx.onStopHookActiveChange(output.stop_hook_active)
+             else stopHookActiveState.set(ctx.sessionId, output.stop_hook_active)
            }
            const isBlock = output.decision === "block"
            // Only return early if the hook explicitly blocks - non-blocking hooks

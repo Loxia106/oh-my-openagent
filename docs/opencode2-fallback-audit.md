@@ -1,10 +1,24 @@
 # OpenCode 2 fallback source audit
 
-**Scope:** source-only comparison of upstream Oh My OpenAgent 5.0.0 and official OpenCode 2.0.18. This records API and call-path evidence; no runtime validation was performed. The fallback files checked in this fork at `665e01ddc0c623f7cd1e8b5c0b92763bbeb901ba` are unchanged from the OMO source pin below.
+**Historical scope:** source-only comparison of upstream Oh My OpenAgent 5.0.0 and official OpenCode 2.0.18. This records API and call-path evidence; no runtime validation was performed at that checkpoint. Later native recovery evidence is recorded below. The fallback files checked in this fork at `665e01ddc0c623f7cd1e8b5c0b92763bbeb901ba` are unchanged from the OMO source pin below.
 
 **Source pins:** [OMO 5.0.0 source, `eb5c55c67877ef58e58a174b4c26d0c3e941eca0`](https://github.com/code-yeongyu/oh-my-openagent/tree/eb5c55c67877ef58e58a174b4c26d0c3e941eca0) and [OpenCode 2.0.18 source, `cd9a14a6b688d4021bee381dfd39d2cef9c0f862`](https://github.com/anomalyco/opencode/tree/cd9a14a6b688d4021bee381dfd39d2cef9c0f862).
 
 Later changes implement live-catalog availability fallback for new delegated children and persist selected rich request settings for resume. Actual disabled-provider promotion also carries entry settings. These changes do not implement provider-error retry or change the startup-catalog boundary described below; see [current compatibility and verification](opencode2-compatibility.md).
+
+## Native primary recovery checkpoint
+
+The native adapter now implements opt-in `runtime_fallback` after a terminal primary provider failure. The failing native assistant, original user-message identity, observed primary HTTP status, effective model and session ownership must agree. Only explicitly configured, enabled fallback models are eligible; their request settings are retained. The adapter persists the selected session model and adds a stable synthetic continuation instead of duplicating the user prompt. Attempt counts, failed-model cooldown data and pending delivery identity are stored durably.
+
+OpenCode 2.0.18 actual-host QA passed 12 checks with five localhost requests: primary 429 → fallback 429 → second fallback success, followed by an exhausted-chain failure and a separate no-chain failure. Native history retains the successful intermediate idle outcome and assistant completion; both sessions intentionally end failed after the negative cases. Server SHA-256: `ec875202c005dc3e95546b94dd04b208941455d9fbf627a3e0327e980376f258`. The reproducible driver is `script/opencode2-runtime-fallback-qa.ts`; local receipt is `.omo/evidence/runtime-fallback-primary-20260927-attempt-2/`. Host retry suppression belongs only to the fixture.
+
+The primary checkpoint does not establish restoration of the primary model, a live-request timeout watchdog, missing-user recovery after compaction, or the separate legacy `model_fallback` controller. The original source audit below explains the different host contracts; its historical implementation-status statements should not override the current compatibility matrix.
+
+## Native delegated recovery checkpoint
+
+Foreground provider failures now require a native `Tool.Error` for the bound child plus that child's matching primary HTTP response, failed assistant, current model, terminal idle generation and persisted selection. The wrapper releases admission and resumes the same child with the next configured model, preserving one parent tool result and avoiding original-prompt replay. Native error identity uses the SDK schema because host and plugin can load separate class copies. Background failures persist this proof without silently retrying; an explicit parent `task_id` resume consumes it only after new admission and revalidation. Cancellation, stop state and changed failure evidence block recovery.
+
+The actual OpenCode 2.0.18 driver `script/opencode2-delegation-runtime-recovery-qa.ts` passed 25 checks and 14 localhost requests. It proved foreground 429 → backup success, visible background failure → explicit resume → backup success, and no fallback for an unconfigured Librarian child. Six native sessions were retained; the no-chain child deliberately ended failed. Final receipt: `.omo/evidence/20260927-delegation-runtime-recovery-r15/`; server SHA-256 `d45f2c8acab3c536e30f17b61efe4b20f2ce2265b52f71664243b16720bde798`. The final guard accepts only the latest assistant failure after the current user message; a newer assistant prevents reuse of an older provider error. Earlier failed runtime and fixture attempts were retained.
 
 ## V1 consumers and defaults
 

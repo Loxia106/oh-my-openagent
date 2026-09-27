@@ -34,9 +34,9 @@ class TestEditor {
 
 function context(): ToolContext {
   return {
-    sessionID: "ses-parent",
-    agent: "sisyphus",
-    messageID: "msg-1",
+    sessionID: "ses-parent" as ToolContext["sessionID"],
+    agent: "sisyphus" as ToolContext["agent"],
+    messageID: "msg-1" as ToolContext["messageID"],
     id: "call-1" as ToolContext["id"],
     signal: new AbortController().signal,
     progress: async () => undefined,
@@ -98,6 +98,28 @@ describe("native V2 filesystem adapters", () => {
       nativeTool("patch", async (input) => { patch = input; return { content: "deleted" } }) as never)
 
     expect(patch).toEqual({ patchText: "*** Begin Patch\n*** Delete File: /tmp/delete.txt\n*** End Patch" })
+  })
+
+  test("captures the native apply_patch executor for aliases and hashline deletion", async () => {
+    const calls: Array<{ input: unknown; context: ToolContext }> = []
+    const editor = new TestEditor([
+      nativeTool("read", async () => ({ output: { type: "file", encoding: "utf8", content: "" } })),
+      nativeTool("edit", async () => { throw new Error("edit must not run for delete") }),
+      nativeTool("apply_patch", async (input, toolContext) => {
+        calls.push({ input, context: toolContext })
+        return { content: "native apply_patch result" }
+      }, { fields: { patchText: {} } }),
+    ])
+    const toolContext = context()
+
+    addV2FilesystemTools(editor as unknown as ToolEditor, {} as Plugin.Context, config)
+    await editor.get("apply_patch")!.execute({ patch: "*** Begin Patch\n*** End Patch" }, toolContext)
+    await editor.get("hashline_edit")!.execute({ filePath: "/tmp/delete.txt", edits: [], delete: true }, toolContext)
+
+    expect(calls).toEqual([
+      { input: { patchText: "*** Begin Patch\n*** End Patch" }, context: toolContext },
+      { input: { patchText: "*** Begin Patch\n*** Delete File: /tmp/delete.txt\n*** End Patch" }, context: toolContext },
+    ])
   })
 
   test("renames a file without a final newline while preserving bytes through native write plus patch delete", async () => {

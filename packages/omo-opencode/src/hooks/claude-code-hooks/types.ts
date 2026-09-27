@@ -87,8 +87,23 @@ export interface PostToolUseInput {
   hook_source?: HookSource
 }
 
+export interface PostToolUseFailureInput {
+  session_id: string
+  transcript_path?: string
+  cwd: string
+  permission_mode?: PermissionMode
+  hook_event_name: "PostToolUseFailure"
+  tool_name: string
+  tool_input: Record<string, unknown>
+  tool_use_id?: string
+  error: string
+  is_interrupt?: boolean
+  hook_source?: HookSource
+}
+
 export interface UserPromptSubmitInput {
   session_id: string
+  transcript_path?: string
   cwd: string
   permission_mode?: PermissionMode
   hook_event_name: "UserPromptSubmit"
@@ -116,6 +131,7 @@ export interface StopInput {
 
 export interface PreCompactInput {
   session_id: string
+  transcript_path?: string
   cwd: string
   hook_event_name: "PreCompact"
   hook_source?: HookSource
@@ -218,7 +234,7 @@ export interface PreCompactOutput extends HookCommonOutput {
 export type ClaudeCodeContent =
   | { type: "text"; text: string }
   | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
-  | { type: "tool_result"; tool_use_id: string; content: string }
+  | { type: "tool_result"; tool_use_id: string; content: string; is_error?: boolean }
 
 export interface ClaudeCodeMessage {
   type: "user" | "assistant"

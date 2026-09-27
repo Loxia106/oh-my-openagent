@@ -44,6 +44,9 @@ describe("native v2 skill visibility", () => {
     expect(filtered.loaded.map((skill) => skill.name)).toEqual(["frontend"])
     expect(filtered.skills.map((skill) => String(skill.name))).toEqual(["frontend"])
 
+    const enabledCatalog = { loaded: builtinSkills, skills: builtinSkills.map((skill) => toV2SkillInfo(skill, "/project")) }
+    expect(filterUnsupportedTeamBuiltinSkills(enabledCatalog, true)).toBe(enabledCatalog)
+
     const customSameName = loadedSkill("security-review", {
       scope: "project",
       definition: { name: "security-review", description: "Local review checklist", template: "Local instructions" },

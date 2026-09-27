@@ -12,7 +12,8 @@ const DISABLED_HOOKS = [
 	"hashline-read-enhancer", "task-resume-info", "write-existing-file-guard", "tasks-todowrite-disabler",
 	"edit-error-recovery", "json-error-recovery", "empty-task-response-detector",
 	"compaction-context-injector", "compaction-todo-preserver", "goal", "todo-continuation-enforcer", "atlas",
-	"directory-readme-injector", "rules-injector",
+	"directory-readme-injector", "rules-injector", "think-mode",
+	"claude-code-hooks",
 ]
 
 describe("native V2 hook orchestration", () => {

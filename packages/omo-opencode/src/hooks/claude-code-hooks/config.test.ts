@@ -10,6 +10,7 @@ describe("loadClaudeHooksConfig", () => {
   let originalWorkingDirectory = ""
   let tempDirectory = ""
   let customSettingsPath = ""
+  let originalClaudeConfigDir: string | undefined
   let mockedNow = 0
 
   beforeEach(() => {
@@ -17,6 +18,9 @@ describe("loadClaudeHooksConfig", () => {
     originalWorkingDirectory = process.cwd()
     tempDirectory = mkdtempSync(join(tmpdir(), "omo-claude-hooks-config-"))
     customSettingsPath = join(tempDirectory, "custom-settings.json")
+    originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = join(tempDirectory, "claude-home")
+    mkdirSync(process.env.CLAUDE_CONFIG_DIR, { recursive: true })
     mkdirSync(join(tempDirectory, ".claude"), { recursive: true })
     process.chdir(tempDirectory)
     mockedNow = 1_000
@@ -28,6 +32,8 @@ describe("loadClaudeHooksConfig", () => {
     clearClaudeHooksConfigCache()
     Date.now = originalDateNow
     process.chdir(originalWorkingDirectory)
+    if (originalClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+    else process.env.CLAUDE_CONFIG_DIR = originalClaudeConfigDir
     rmSync(tempDirectory, { recursive: true, force: true })
   })
 
@@ -84,6 +90,38 @@ describe("loadClaudeHooksConfig", () => {
       expect(result).toBeNull()
     } finally {
       parseSpy.mockRestore()
+    }
+  })
+
+  test("#given explicit project directories and per-load hooks #when loaded concurrently #then settings stay project-scoped and ignore the legacy plugin global", async () => {
+    const { setAdditionalAllowedMcpEnvVars, resetAdditionalAllowedMcpEnvVars } = require("../../features/claude-code-mcp-loader/configure-allowed-env-vars")
+    const projectA = join(tempDirectory, "project-a")
+    const projectB = join(tempDirectory, "project-b")
+    mkdirSync(join(projectA, ".claude"), { recursive: true })
+    mkdirSync(join(projectB, ".claude"), { recursive: true })
+    writeFileSync(join(projectA, ".claude", "settings.json"), JSON.stringify({ hooks: { Stop: [{ matcher: "*", hooks: [{ type: "command", command: "project-a" }] }] } }))
+    writeFileSync(join(projectB, ".claude", "settings.json"), JSON.stringify({ hooks: { Stop: [{ matcher: "*", hooks: [{ type: "command", command: "project-b" }] }] } }))
+    setAdditionalAllowedMcpEnvVars(["V2_LEAKED_VAR"])
+    const plugin = (command: string) => [{ hooks: { Stop: [{ matcher: "*", hooks: [{ type: "command", command }] }] } }]
+
+    try {
+      const [configA, configB] = await Promise.all([
+        loadClaudeHooksConfig(undefined, { projectDirectory: projectA, pluginHooksConfigs: plugin("plugin-a"), allowedMcpEnvVars: [] }),
+        loadClaudeHooksConfig(undefined, { projectDirectory: projectB, pluginHooksConfigs: plugin("plugin-b"), allowedMcpEnvVars: [] }),
+      ])
+      const commands = (config: Awaited<ReturnType<typeof loadClaudeHooksConfig>>) => (config?.Stop ?? []).flatMap((matcher) =>
+        matcher.hooks.flatMap((hook) => hook.type === "command" ? [{ command: hook.command, allowedEnvVars: hook.allowedEnvVars }] : []),
+      )
+      const commandsA = commands(configA)
+      const commandsB = commands(configB)
+      expect(commandsA.map((entry) => entry.command)).toEqual(["project-a", "plugin-a"])
+      expect(commandsB.map((entry) => entry.command)).toEqual(["project-b", "plugin-b"])
+      const pluginA = commandsA[1]
+      expect(pluginA?.allowedEnvVars).toContain("PATH")
+      expect(pluginA?.allowedEnvVars).toContain("HOME")
+      expect(pluginA?.allowedEnvVars).not.toContain("V2_LEAKED_VAR")
+    } finally {
+      resetAdditionalAllowedMcpEnvVars()
     }
   })
 })

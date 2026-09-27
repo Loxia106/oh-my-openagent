@@ -264,6 +264,7 @@ export function createV2BackgroundActivityMonitor(input: {
 	ctx: Plugin.Context
 	config?: BackgroundTaskConfig
 	clock?: BackgroundActivityClock
+	resolveParent?: (info: SessionInfo) => Promise<string | undefined>
 	getLeases: () => readonly BackgroundActivityLease[]
 	getLease: (leaseID: string) => BackgroundActivityLease | undefined
 	reconcileIdle: (lease: BackgroundActivityLease, info: SessionInfo) => Promise<boolean>
@@ -393,7 +394,7 @@ export function createV2BackgroundActivityMonitor(input: {
 			if (!sameGeneration(getLease(lease.leaseID), lease) || states.get(lease.leaseID) !== unknown) return
 			let info: SessionInfo | undefined
 			try { info = await ctx.session.get({ sessionID }) } catch { info = undefined }
-			if (info && validIdentity(lease, info) && isOutcome(info.outcome) && sameGeneration(getLease(lease.leaseID), lease)) await reconcileIdle(lease, info)
+			if (info && await validIdentity(lease, info) && isOutcome(info.outcome) && sameGeneration(getLease(lease.leaseID), lease)) await reconcileIdle(lease, info)
 			return
 		}
 		if (current.lastSequence !== null && seq! <= current.lastSequence) return
@@ -402,7 +403,7 @@ export function createV2BackgroundActivityMonitor(input: {
 		// still matches the bound child and its idle watermark has not advanced.
 		let info: SessionInfo
 		try { info = await ctx.session.get({ sessionID }) } catch { return }
-		if (!validIdentity(lease, info) || states.get(lease.leaseID) !== current || !sameGeneration(getLease(lease.leaseID), lease)) return
+		if (!(await validIdentity(lease, info)) || states.get(lease.leaseID) !== current || !sameGeneration(getLease(lease.leaseID), lease)) return
 		const idle = info.time.idle
 		if (current.baselineIdle !== null && !finite(idle)) return
 		if (current.baselineIdle === null && !finite(idle) && lease.mode !== "new") return
@@ -552,10 +553,10 @@ export function createV2BackgroundActivityMonitor(input: {
 		}
 	}
 
-	function validIdentity(lease: BackgroundActivityLease, info: SessionInfo): boolean {
+	async function validIdentity(lease: BackgroundActivityLease, info: SessionInfo): Promise<boolean> {
 		return Boolean(lease.childSessionID) && info.id === lease.childSessionID &&
-			info.parentID === lease.parentSessionID && info.projectID === ctx.location.project.id &&
-			sameLocation(ctx, info)
+			info.projectID === ctx.location.project.id && sameLocation(ctx, info) &&
+			(input.resolveParent ? await input.resolveParent(info) : info.parentID) === lease.parentSessionID
 	}
 
 	function sameGeneration(current: BackgroundActivityLease | undefined, expected: BackgroundActivityLease): boolean {
@@ -671,7 +672,9 @@ export function createV2BackgroundActivityMonitor(input: {
 				states.set(lease.leaseID, state)
 				schedulePersist(state)
 			}
-			if (!validIdentity(lease, info)) {
+			const identityValid = await validIdentity(lease, info)
+			if (disposed || !started || monitorEpoch !== epoch || !sameGeneration(getLease(lease.leaseID), lease) || states.get(lease.leaseID) !== state) continue
+			if (!identityValid) {
 				const unknown: BackgroundActivityState = { ...state, status: "unknown", freshStartSeen: false, generationAmbiguous: true }
 				states.set(lease.leaseID, unknown)
 				schedulePersist(unknown)

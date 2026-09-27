@@ -121,7 +121,7 @@ async function executeHashlineEdit(
   if (args.delete) {
     if (!nativePatch) throw new ToolError({ message: "The native V2 patch tool is unavailable; hashline_edit cannot safely delete a file." })
     const patchText = `*** Begin Patch\n*** Delete File: ${args.filePath}\n*** End Patch`
-    const result = await nativePatch.execute({ patchText }, context)
+    const result = await executeNativePatch(nativePatch, patchText, context)
     return {
       content: typeof result.content === "string" ? result.content : `Successfully deleted ${args.filePath}`,
       metadata: { ...(result.metadata ?? {}), filePath: args.filePath, hashline: true },
@@ -166,7 +166,7 @@ async function executeHashlineEdit(
     let renameResult: Awaited<ReturnType<NativeTool["execute"]>> | undefined
     if (args.rename && args.rename !== args.filePath) {
       try {
-        renameResult = await nativePatch!.execute({ patchText: `*** Begin Patch\n*** Delete File: ${args.filePath}\n*** End Patch` }, context)
+        renameResult = await executeNativePatch(nativePatch!, `*** Begin Patch\n*** Delete File: ${args.filePath}\n*** End Patch`, context)
       } catch (error) {
         throw new ToolError({ message: `Wrote ${targetPath}, but the native patch tool could not delete ${args.filePath}; the rename is incomplete: ${errorText(error)}` })
       }
@@ -190,7 +190,7 @@ async function executeHashlineEdit(
       await nativeWrite.execute({ path: args.rename, content: after }, context)
       const deletePatch = `*** Begin Patch\n*** Delete File: ${args.filePath}\n*** End Patch`
       try {
-        nativeResult = await nativePatch.execute({ patchText: deletePatch }, context)
+        nativeResult = await executeNativePatch(nativePatch, deletePatch, context)
       } catch (error) {
         throw new ToolError({ message: `Wrote ${args.rename}, but the native patch tool could not delete ${args.filePath}; the rename is incomplete: ${errorText(error)}` })
       }
@@ -208,7 +208,7 @@ async function executeHashlineEdit(
         ...newLines.map((line) => `+${line}`),
         "*** End Patch",
       ].join("\n")
-      nativeResult = await nativePatch.execute({ patchText }, context)
+      nativeResult = await executeNativePatch(nativePatch, patchText, context)
     }
   } else {
     nativeResult = await nativeEdit.execute({ path: args.filePath, oldString: before, newString: after }, context)
@@ -253,6 +253,10 @@ function patchInputField(native: NativeTool): "patchText" | "patch" {
   return "patchText"
 }
 
+function executeNativePatch(native: NativeTool, patchText: string, context: ToolContext): ReturnType<NativeTool["execute"]> {
+  return native.execute({ [patchInputField(native)]: patchText }, context)
+}
+
 function addNativeAlias(editor: ToolEditor, alias: string, native: NativeTool): void {
   editor.add({
     name: alias,
@@ -277,9 +281,8 @@ export function addV2FilesystemTools(editor: ToolEditor, ctx: Plugin.Context, co
     editor.remove("bash")
   }
 
-  const patch = editor.get("patch")
+  const patch = editor.get("patch") ?? editor.get("apply_patch")
   if (patch && !isDisabled(config, "patch") && !isDisabled(config, "apply_patch")) {
-    const field = patchInputField(patch)
     editor.remove("apply_patch")
     editor.add({
       name: "apply_patch",
@@ -287,7 +290,7 @@ export function addV2FilesystemTools(editor: ToolEditor, ctx: Plugin.Context, co
       input: patchAliasInput,
       output: patch.output,
       options: patch.options,
-      execute: (args, context) => patch.execute({ [field]: args.patchText ?? args.patch }, context),
+      execute: (args, context) => executeNativePatch(patch, args.patchText ?? args.patch ?? "", context),
     })
   } else if (isDisabled(config, "apply_patch")) {
     editor.remove("apply_patch")
@@ -300,7 +303,7 @@ export function addV2FilesystemTools(editor: ToolEditor, ctx: Plugin.Context, co
   const read = editor.get("read")
   const edit = editor.get("edit")
   const write = editor.get("write")
-  const nativePatch = editor.get("patch")
+  const nativePatch = isDisabled(config, "patch", "apply_patch") ? undefined : patch
   if (read && !isDisabled(config, "read")) {
     addPathCompatibility(editor, "read", read, nativePathInput, (args: z.infer<typeof nativePathInput>) => ({
       path: normalizedPath(args), ...(args.offset === undefined ? {} : { offset: args.offset }), ...(args.limit === undefined ? {} : { limit: args.limit }),

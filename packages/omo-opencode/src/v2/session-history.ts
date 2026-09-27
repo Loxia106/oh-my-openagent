@@ -1,4 +1,5 @@
 import type { Plugin } from "@opencode/plugin"
+import type { VerifiedLogicalParentResolver } from "./background-admission"
 
 export type V2SessionStatus = "running" | "completed" | "failed" | "interrupted" | "unknown"
 
@@ -93,9 +94,11 @@ export async function readOwnedChildSession(
   ctx: Plugin.Context,
   parentSessionID: string,
   childSessionID: string,
+  resolveLogicalParent?: VerifiedLogicalParentResolver,
 ): Promise<Awaited<ReturnType<Plugin.Context["session"]["get"]>>> {
   const session = await ctx.session.get({ sessionID: childSessionID })
-  if (session.parentID !== parentSessionID) {
+  const actualParentID = session.parentID ?? await resolveLogicalParent?.(childSessionID)
+  if (session.id !== childSessionID || actualParentID !== parentSessionID) {
     throw new Error(`Session ${childSessionID} is not a child of the current session`)
   }
   return session

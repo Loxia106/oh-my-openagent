@@ -144,8 +144,8 @@ async function harness(options: HarnessOptions = {}) {
 		get sessionGets() { return sessionGets },
 		get disposeCalls() { return disposeCalls },
 		get callback() { return callback },
-		async register(configValue: OhMyOpenCodeConfig = config()) {
-			return registerV2BackgroundToolPolicy(ctx, configValue, runs)
+		async register(configValue: OhMyOpenCodeConfig = config(), resolveLogicalParent?: (id: string) => Promise<string | undefined>) {
+			return registerV2BackgroundToolPolicy(ctx, configValue, runs, resolveLogicalParent)
 		},
 		async before(event: TestEvent) {
 			await callback?.(event)
@@ -167,6 +167,29 @@ async function invoke(host: Awaited<ReturnType<typeof harness>>, event: TestEven
 }
 
 describe("native V2 background tool-loop policy", () => {
+	test("enforces the same tool budget for verified parentless Team members", async () => {
+		const host = await harness()
+		host.sessions.get("ses-child")!.parentID = undefined
+		const policy = await host.register(config({ maxToolCalls: 2 }), async (id) => id === "ses-child" ? "ses-parent" : undefined)
+		let effects = 0
+		await invoke(host, toolEvent("ses-child", 1), () => { effects += 1 })
+		await expect(invoke(host, toolEvent("ses-child", 2), () => { effects += 1 })).rejects.toBeInstanceOf(ToolError)
+		expect(effects).toBe(1)
+		expect(host.interrupts).toEqual([{ sessionID: "ses-child" }])
+		await policy.cleanup()
+	})
+
+	test("does not run a member tool if its durable logical ancestry cannot be verified", async () => {
+		const host = await harness()
+		host.sessions.get("ses-child")!.parentID = undefined
+		const policy = await host.register(config(), async () => { throw new Error("missing membership") })
+		let effects = 0
+		await expect(invoke(host, toolEvent("ses-child", 1), () => { effects += 1 })).rejects.toThrow("missing membership")
+		expect(effects).toBe(0)
+		expect(host.interrupts).toEqual([])
+		await policy.cleanup()
+	})
+
 	test("enforces the hard limit even when repeat detection is disabled and uses nested max precedence", async () => {
 		const host = await harness()
 		await host.register(config({ maxToolCalls: 12, circuitBreaker: { enabled: false, maxToolCalls: 10 } }))

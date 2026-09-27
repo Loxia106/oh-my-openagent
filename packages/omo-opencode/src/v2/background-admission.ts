@@ -16,6 +16,9 @@ export type AdmissionMode = "new" | "resume"
 export type AdmissionModel = { providerID: string; id: string }
 export type AdmissionLeaseStatus = "queued" | "reserved" | "creating" | "running" | "terminal"
 
+/** Undefined means unmanaged; inconsistent known membership must reject. */
+export type VerifiedLogicalParentResolver = (sessionID: string) => Promise<string | undefined>
+
 export type BackgroundAdmissionInput = {
 	parentSessionID: string
 	model: AdmissionModel
@@ -269,6 +272,7 @@ export function createV2BackgroundAdmission(
 	ctx: Plugin.Context,
 	config?: BackgroundTaskConfig,
 	clock: BackgroundAdmissionClock = systemClock,
+	resolveLogicalParent?: VerifiedLogicalParentResolver,
 ): V2BackgroundAdmission {
 	const records = new Map<string, StoredLease>()
 	const waiters = new Map<string, SlotWaiter[]>()
@@ -376,6 +380,12 @@ export function createV2BackgroundAdmission(
 			canonicalDirectory(info.location.directory) === canonicalDirectory(ctx.location.directory)
 	}
 
+	async function parentOf(info: SessionInfo): Promise<string | undefined> {
+		if (!sessionMatchesContext(info)) throw new Error(`Cannot resolve admission lineage outside this project or workspace: ${info.id}.`)
+		if (info.parentID) return info.parentID
+		return resolveLogicalParent?.(info.id)
+	}
+
 	async function persist(lease: StoredLease): Promise<void> {
 		try {
 			await ctx.storage.set(storageKey(scopedLeasePrefix, lease.leaseID), lease)
@@ -455,8 +465,9 @@ export function createV2BackgroundAdmission(
 		visited.add(current.id)
 		const sessionIDs = [current.id]
 		let depth = 0
-		while (current.parentID) {
-			const parentID = current.parentID
+		for (;;) {
+			const parentID = await parentOf(current)
+			if (!parentID) break
 			if (visited.has(parentID)) throw new Error(`Background admission blocked: detected a session parent cycle at ${parentID}.`)
 			visited.add(parentID)
 			try {
@@ -500,6 +511,7 @@ export function createV2BackgroundAdmission(
 	activity = createV2BackgroundActivityMonitor({
 		ctx,
 		config,
+		resolveParent: parentOf,
 		getLeases: () => [...records.values()].map(activityLease),
 		getLease: (leaseID) => {
 			const lease = records.get(leaseID)
@@ -538,7 +550,7 @@ export function createV2BackgroundAdmission(
 			}
 			return
 		}
-		if (info.id !== lease.childSessionID || info.parentID !== lease.parentSessionID || !sessionMatchesContext(info)) {
+		if (info.id !== lease.childSessionID || !sessionMatchesContext(info) || await parentOf(info) !== lease.parentSessionID) {
 			failClosed(`Persisted lease ${lease.leaseID} resolves to a session outside its recorded parent/project/location. Keep it reserved and inspect the plugin-storage record.`)
 			return
 		}
@@ -733,7 +745,7 @@ export function createV2BackgroundAdmission(
 			} catch (error) {
 				throw new Error(`Cannot safely resume subagent session ${childSessionID}: session lookup failed. ${errorText(error)}`)
 			}
-			if (childInfo.id !== childSessionID || childInfo.parentID !== input.parentSessionID || !sessionMatchesContext(childInfo)) {
+			if (childInfo.id !== childSessionID || !sessionMatchesContext(childInfo) || await parentOf(childInfo) !== input.parentSessionID) {
 				throw new Error(`Cannot resume session ${childSessionID}: it is not a direct child of ${input.parentSessionID}.`)
 			}
 			if (childInfo.projectID !== lineage.projectID || childInfo.projectID !== ctx.location.project.id) {
@@ -754,7 +766,7 @@ export function createV2BackgroundAdmission(
 				} catch (error) {
 					throw new Error(`Cannot adopt legacy child session ${childSessionID} after waiting for it to become idle. ${errorText(error)}`)
 				}
-				if (childInfo.id !== childSessionID || childInfo.parentID !== input.parentSessionID || childInfo.projectID !== ctx.location.project.id || !sessionMatchesContext(childInfo)) {
+				if (childInfo.id !== childSessionID || !sessionMatchesContext(childInfo) || await parentOf(childInfo) !== input.parentSessionID) {
 					throw new Error(`Cannot adopt legacy child session ${childSessionID}: session identity, parent, or project changed while waiting.`)
 				}
 				if (!isFiniteNumber(childInfo.time.idle)) {
@@ -911,7 +923,7 @@ export function createV2BackgroundAdmission(
 				} catch (error) {
 					throw new Error(`Could not bind admission lease ${lease.leaseID} to child session ${childSessionID}: ${errorText(error)}`)
 				}
-				if (info.id !== childSessionID || info.parentID !== current.parentSessionID) {
+				if (info.id !== childSessionID || await parentOf(info) !== current.parentSessionID) {
 					throw new Error(`Native child session ${childSessionID} is not a direct child of ${current.parentSessionID}; lease ${lease.leaseID} remains held until the native call settles.`)
 				}
 				if (input.mode === "resume" && childSessionID !== input.sessionID) {
@@ -978,10 +990,10 @@ export function createV2BackgroundAdmission(
 						return true
 						})
 					}
-					if (disposed || info.id !== latest.childSessionID || info.parentID !== latest.parentSessionID || info.projectID !== ctx.location.project.id || !sessionMatchesContext(info)) return false
+					if (disposed || info.id !== latest.childSessionID || !sessionMatchesContext(info) || await parentOf(info) !== latest.parentSessionID) return false
 					return serialized(async () => {
 						const current = records.get(lease.leaseID)
-						if (!current || current.generation !== latest.generation || current.status === "terminal") return false
+						if (disposed || !current || current.generation !== latest.generation || current.status === "terminal") return false
 						await markTerminal(current.leaseID, current.generation, null, current.lastTerminalSeq, current.terminalEventID)
 						return true
 					})
@@ -1061,7 +1073,7 @@ export function createV2BackgroundAdmission(
 			}
 			return
 		}
-		if (info.id !== sessionID || info.parentID !== lease.parentSessionID || info.projectID !== ctx.location.project.id || !sessionMatchesContext(info) || !isTerminalIdleForLease(info, lease)) return
+		if (info.id !== sessionID || !sessionMatchesContext(info) || await parentOf(info) !== lease.parentSessionID || !isTerminalIdleForLease(info, lease)) return
 		await serialized(() => markTerminal(lease.leaseID, lease.generation, info.outcome!, seq, event.id ?? null))
 	}
 

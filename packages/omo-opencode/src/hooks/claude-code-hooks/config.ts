@@ -70,12 +70,12 @@ function normalizeHooksConfig(raw: RawClaudeHooksConfig): ClaudeHooksConfig {
   return result
 }
 
-export function getClaudeSettingsPaths(customPath?: string): string[] {
+export function getClaudeSettingsPaths(customPath?: string, projectDirectory = process.cwd()): string[] {
   const claudeConfigDir = getClaudeConfigDir()
   const paths = [
     join(claudeConfigDir, "settings.json"),
-    join(process.cwd(), ".claude", "settings.json"),
-    join(process.cwd(), ".claude", "settings.local.json"),
+    join(projectDirectory, ".claude", "settings.json"),
+    join(projectDirectory, ".claude", "settings.local.json"),
   ]
 
   if (customPath && existsSync(customPath)) {
@@ -85,6 +85,15 @@ export function getClaudeSettingsPaths(customPath?: string): string[] {
   // Deduplicate paths to prevent loading the same file multiple times
   // (e.g., when cwd is the home directory)
   return [...new Set(paths)]
+}
+
+export interface ClaudeHooksConfigLoadOptions {
+  /** Project root for .claude settings. When supplied, the process cwd is never consulted. */
+  projectDirectory?: string
+  /** Explicit plugin hooks; supplying this option bypasses the legacy process-global plugin state. */
+  pluginHooksConfigs?: PluginHooksConfig[]
+  /** Explicit per-plugin-load environment additions; [] means builtins only. */
+  allowedMcpEnvVars?: readonly string[]
 }
 
 function getCacheKey(customSettingsPath?: string): string {
@@ -176,8 +185,11 @@ function isPluginHookMatcher(m: unknown): m is PluginHookMatcher {
  * For HTTP hooks: filter allowedEnvVars to only allowlisted vars.
  * For command hooks: set allowedEnvVars to the full MCP allowlist.
  */
-function applyMcpEnvAllowlist(action: HookAction): HookAction {
-  const allowedVars = getAllowedMcpEnvVars()
+function applyMcpEnvAllowlist(
+  action: HookAction,
+  additionalAllowedVars?: readonly string[],
+): HookAction {
+  const allowedVars = getAllowedMcpEnvVars(additionalAllowedVars)
 
   if (action.type === "http") {
     if (!action.allowedEnvVars || action.allowedEnvVars.length === 0) {
@@ -196,7 +208,8 @@ function applyMcpEnvAllowlist(action: HookAction): HookAction {
 
 export function mergePluginHooksConfigs(
   base: ClaudeHooksConfig,
-  pluginHooksConfigs: PluginHooksConfig[]
+  pluginHooksConfigs: PluginHooksConfig[],
+  allowedMcpEnvVars?: readonly string[],
 ): ClaudeHooksConfig {
   let result = { ...base }
 
@@ -214,7 +227,7 @@ export function mergePluginHooksConfigs(
           matcher: m.matcher ?? m.pattern ?? "*",
           hooks: (m.hooks ?? [])
             .filter(isHookAction)
-            .map(applyMcpEnvAllowlist),
+            .map((action) => applyMcpEnvAllowlist(action, allowedMcpEnvVars)),
         }))
         .filter((m) => m.hooks.length > 0)
 
@@ -230,18 +243,24 @@ export function mergePluginHooksConfigs(
 }
 
 export async function loadClaudeHooksConfig(
-  customSettingsPath?: string
+  customSettingsPath?: string,
+  options?: ClaudeHooksConfigLoadOptions,
 ): Promise<ClaudeHooksConfig | null> {
-  const cacheKey = getCacheKey(customSettingsPath)
-  const cachedConfig = getCachedConfig(cacheKey)
+  const projectDirectory = options?.projectDirectory ?? process.cwd()
+  const cacheKey = options
+    ? `${projectDirectory}::${customSettingsPath ?? ""}::${options.allowedMcpEnvVars?.join("|") ?? ""}`
+    : getCacheKey(customSettingsPath)
+  // Explicit V2 loads are uncached so plugin/env configuration cannot leak between
+  // plugin instances that share process-global module state.
+  const cachedConfig = options ? undefined : getCachedConfig(cacheKey)
   if (cachedConfig !== undefined) {
     return cachedConfig
   }
 
-  const paths = getClaudeSettingsPaths(customSettingsPath)
+  const uniquePaths = getClaudeSettingsPaths(customSettingsPath, projectDirectory)
   let mergedConfig: ClaudeHooksConfig = {}
 
-  for (const settingsPath of paths) {
+  for (const settingsPath of uniquePaths) {
     if (existsSync(settingsPath)) {
       try {
         const content = await bunFile(settingsPath).text()
@@ -259,15 +278,19 @@ export async function loadClaudeHooksConfig(
   }
 
   // Merge plugin hooks configs for the current project directory
-  const projectConfigs = pluginHooksState.getConfigs(process.cwd())
+  const projectConfigs = options
+    ? options.pluginHooksConfigs ?? []
+    : pluginHooksState.getConfigs(process.cwd())
   if (projectConfigs.length > 0) {
-    mergedConfig = mergePluginHooksConfigs(mergedConfig, projectConfigs)
+    mergedConfig = mergePluginHooksConfigs(mergedConfig, projectConfigs, options?.allowedMcpEnvVars)
   }
 
   const resolvedConfig = Object.keys(mergedConfig).length > 0 ? mergedConfig : null
-  configCache.set(cacheKey, {
-    value: resolvedConfig,
-    cachedAt: Date.now(),
-  })
+  if (!options) {
+    configCache.set(cacheKey, {
+      value: resolvedConfig,
+      cachedAt: Date.now(),
+    })
+  }
   return resolvedConfig
 }

@@ -1,7 +1,7 @@
 > [!WARNING]
-> **OpenCode 2 개인 포크:** OpenCode **2.0.18** 호환 작업을 포함한 저장소이며, 공식 Oh My OpenAgent 릴리스가 아닙니다. 아직 기존 기능 전체의 호환을 보장하지 않습니다. 지원 범위와 검증 결과는 [호환성 문서](docs/opencode2-compatibility.md)를 확인하세요. 기존 SUL-1.0 라이선스와 고지는 그대로 적용됩니다.
+> **OpenCode 2 개인 포크:** 11개 기본 에이전트의 프롬프트·스킬·명령·위임·검토·작업 재개를 OpenCode **2.0.18**의 네이티브 API로 이식한 브랜치입니다. 공식 Oh My OpenAgent 릴리스는 아닙니다. [파이프라인 검증 결과](docs/opencode2-agent-pipelines.md)와 [기존 기능과의 차이](docs/opencode2-compatibility.md)를 확인하세요. 기존 SUL-1.0 라이선스와 고지는 그대로 적용됩니다.
 >
-> 이 포크는 `codex/opencode2-compat` 브랜치를 복제한 뒤 `bun install --ignore-scripts --frozen-lockfile`, `bun run build:opencode2`로 준비합니다. 적용할 프로젝트를 지정해 `bun run install:opencode2 -- --project <프로젝트 경로>`를 실행하거나 `--config-dir <OpenCode 설정 경로>`를 사용하세요. 플러그인은 절대 경로로 등록되므로 복제한 저장소와 `node_modules`를 유지해야 합니다. 아래의 기존 npm 설치 명령으로는 이 포크가 설치되지 않습니다.
+> [한국어 설치·실행 안내](docs/opencode2-quickstart.ko.md)를 따라 `codex/opencode2-compat` 브랜치를 복제하고 `bun install --ignore-scripts --frozen-lockfile`을 실행합니다. 적용할 프로젝트를 지정해 `bun run install:opencode2 -- --project <프로젝트 경로>`를 실행하거나 `--config-dir <OpenCode 설정 경로>`를 사용하세요. 설치 명령에 빌드가 포함됩니다. 플러그인은 절대 경로로 등록되므로 복제한 저장소와 `node_modules`를 유지해야 합니다. 아래의 기존 npm 설치 명령으로는 이 포크가 설치되지 않습니다.
 
 > [!NOTE]
 > **OmO 베타: OmO ❤️ Pi**

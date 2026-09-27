@@ -11,6 +11,8 @@ import { addV2TaskSystemTools } from "./tool-task"
 import { addV2GoalTools } from "./tool-goal"
 import { registerV2DisabledToolGuard } from "./tool-disabled-guard"
 import { addV2SkillMcpTool, registerV2SkillMcpRuntime } from "./tool-skill-mcp"
+import type { createV2TeamManager } from "./team-mode"
+import { registerV2InteractiveBashTool } from "./interactive-bash"
 
 const todoInput = z.object({
   todos: z.array(z.object({
@@ -89,21 +91,34 @@ export async function disposeV2ToolRegistrations(cleanups: readonly (() => Promi
 export async function registerV2Tools(
   ctx: Plugin.Context,
   config: OhMyOpenCodeConfig,
-): Promise<() => Promise<void>> {
+  options: { team?: ReturnType<typeof createV2TeamManager>; isStopped?: (sessionID: string) => boolean | Promise<boolean> } = {},
+): Promise<{ cleanup: () => Promise<void>; startManagedSessions: () => Promise<void> }> {
 	let skillMcp: Awaited<ReturnType<typeof registerV2SkillMcpRuntime>>
 	let toolRegistration: Awaited<ReturnType<typeof ctx.tool.transform>> | undefined
 	let delegation: Awaited<ReturnType<typeof registerV2Delegation>> | undefined
 	let disabledToolGuard: (() => Promise<void>) | undefined
+	let teamTools: Awaited<ReturnType<typeof ctx.tool.transform>> | undefined
+	let interactiveBash: (() => Promise<void>) | undefined
 	try {
 		skillMcp = await registerV2SkillMcpRuntime(ctx, config)
 		toolRegistration = await ctx.tool.transform((editor) => addNativeTools(editor, ctx, config, skillMcp))
-		delegation = await registerV2Delegation(ctx, config, getV2SubagentRunState(ctx.storage))
+		delegation = await registerV2Delegation(ctx, config, getV2SubagentRunState(ctx.storage), {
+			resolveLogicalParent: options.team?.resolveLogicalParent,
+			isStopped: options.isStopped,
+		})
+		if (options.team) {
+			teamTools = await ctx.tool.transform((editor) => options.team!.createTools(editor))
+		}
+		interactiveBash = await registerV2InteractiveBashTool(ctx, config)
 		disabledToolGuard = await registerV2DisabledToolGuard(ctx, config)
 	} catch (error) {
 		const cleanups: Array<() => Promise<void>> = []
 		if (skillMcp) cleanups.push(() => skillMcp!.cleanup())
 		if (toolRegistration) cleanups.push(() => toolRegistration!.dispose())
 		if (delegation) cleanups.push(() => delegation!.cleanup())
+		if (options.team) cleanups.push(() => options.team!.dispose())
+		if (teamTools) cleanups.push(() => teamTools!.dispose())
+		if (interactiveBash) cleanups.push(interactiveBash)
     if (disabledToolGuard) cleanups.push(disabledToolGuard)
     try {
       await disposeV2ToolRegistrations(cleanups)
@@ -114,14 +129,29 @@ export async function registerV2Tools(
   }
 
   let disposed = false
-	return async () => {
+	let managedSessionsStarted = false
+	const cleanup = async () => {
 		if (disposed) return
 		disposed = true
 		const cleanups: Array<() => Promise<void>> = []
 		if (skillMcp) cleanups.push(() => skillMcp!.cleanup())
 		if (toolRegistration) cleanups.push(() => toolRegistration!.dispose())
 		cleanups.push(async () => delegation?.cleanup())
+		if (options.team) cleanups.push(() => options.team!.dispose())
+		if (teamTools) cleanups.push(() => teamTools!.dispose())
+		if (interactiveBash) cleanups.push(interactiveBash)
 		cleanups.push(async () => disabledToolGuard?.())
 		await disposeV2ToolRegistrations(cleanups)
+	}
+	return {
+		cleanup,
+		async startManagedSessions() {
+			if (disposed) throw new Error("Cannot start managed sessions after tool cleanup")
+			if (managedSessionsStarted) return
+			managedSessionsStarted = true
+			if (options.team && delegation) {
+				await options.team.start({ admission: delegation.admission, runs: delegation.runs })
+			}
+		},
 	}
 }

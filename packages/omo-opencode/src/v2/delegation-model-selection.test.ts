@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { resolveV2DelegationModelSelection } from "./delegation-model-selection"
+import { advanceV2DelegationFallback, resolveV2DelegationFallbackCandidates, resolveV2DelegationModelSelection, type DelegationFallbackState } from "./delegation-model-selection"
 
 const catalog = [
 	{ providerID: "openai", id: "primary", enabled: false, variants: [] },
@@ -15,6 +15,100 @@ const catalog = [
 ]
 
 describe("native V2 delegation model selection", () => {
+	test("runtime fallback candidates preserve configured order and rich per-entry settings while filtering current and disabled models", () => {
+		const resolved = resolveV2DelegationFallbackCandidates({
+			agentID: "explore",
+			catalog,
+			disabledProviders: ["anthropic"],
+			currentModel: { providerID: "openai", id: "primary" },
+			agentConfig: {
+				fallback_models: [
+					"openai/primary",
+					{ model: "openai/second", reasoning: "high", temperature: 0.45, top_p: 0.7, max_tokens: 900, provider_options: { store: false } },
+					"anthropic/fallback",
+					"openai/second#high",
+				],
+			},
+		})
+
+		expect(resolved?.source).toBe("agent")
+		expect(resolved?.candidates).toEqual([{
+			model: { providerID: "openai", id: "second", variant: "high" },
+			settings: { store: false, temperature: 0.45, topP: 0.7, maxTokens: 900, reasoningEffort: "high", parallelToolCalls: false },
+			source: "configured",
+		}])
+	})
+
+	test("a configured category fallback chain takes precedence over agent fallbacks", () => {
+		const resolved = resolveV2DelegationFallbackCandidates({
+			agentID: "sisyphus-junior",
+			categoryName: "deep",
+			catalog,
+			currentModel: { providerID: "openai", id: "primary" },
+			categoryConfig: { fallback_models: [{ model: "openai/second", top_p: 0.6 }] },
+			categoryOverride: { fallback_models: [{ model: "anthropic/fallback", temperature: 0.3 }] },
+			agentConfig: { fallback_models: ["openai/second"] },
+		})
+		expect(resolved?.source).toBe("category")
+		expect(resolved?.candidates).toMatchObject([{ model: { providerID: "anthropic", id: "fallback" }, settings: { temperature: 0.3 } }])
+	})
+
+	test("an explicit but unavailable category chain does not silently fall through to another chain", () => {
+		const resolved = resolveV2DelegationFallbackCandidates({
+			agentID: "sisyphus-junior",
+			categoryName: "deep",
+			catalog,
+			categoryOverride: { fallback_models: ["missing/model"] },
+			categoryConfig: { fallback_models: ["openai/second"] },
+			agentConfig: { fallback_models: ["anthropic/fallback"] },
+		})
+		expect(resolved).toBeUndefined()
+	})
+
+	test("fallback progression advances once, persists the failed model, honors cooldown, and stops at the attempt cap", () => {
+		const state: DelegationFallbackState = {
+			source: "agent",
+			candidates: [
+				{ model: { providerID: "openai", id: "first" }, settings: {}, source: "configured" },
+				{ model: { providerID: "openai", id: "second" }, settings: { maxTokens: 77 }, source: "configured" },
+			],
+			currentIndex: -1,
+			attempts: 0,
+			failedAt: {},
+		}
+		const first = advanceV2DelegationFallback(state, { providerID: "openai", id: "primary" }, {
+			now: 1000, cooldownMs: 60_000, maxAttempts: 3,
+		})
+		expect(first?.choice.model.id).toBe("first")
+		expect(first?.state).toMatchObject({ currentIndex: 0, attempts: 1, failedAt: { "openai/primary#": 1000 } })
+
+		const second = advanceV2DelegationFallback(first!.state, first!.choice.model, {
+			now: 1001, cooldownMs: 60_000, maxAttempts: 3,
+		})
+		expect(second?.choice).toEqual(state.candidates[1])
+		expect(second?.state.attempts).toBe(2)
+		expect(advanceV2DelegationFallback(second!.state, second!.choice.model, {
+			now: 1002, cooldownMs: 60_000, maxAttempts: 2,
+		})).toBeUndefined()
+	})
+
+	test("skips a configured candidate still in cooldown", () => {
+		const state: DelegationFallbackState = {
+			source: "agent",
+			candidates: [
+				{ model: { providerID: "openai", id: "first" }, settings: {}, source: "configured" },
+				{ model: { providerID: "openai", id: "second" }, settings: {}, source: "configured" },
+			],
+			currentIndex: -1,
+			attempts: 0,
+			failedAt: { "openai/first#": 990 },
+		}
+		const next = advanceV2DelegationFallback(state, { providerID: "openai", id: "primary" }, {
+			now: 1000, cooldownMs: 60_000, maxAttempts: 3,
+		})
+		expect(next?.choice.model.id).toBe("second")
+	})
+
 	test("skips an unavailable primary and retains the selected rich fallback entry settings", () => {
 		const selected = resolveV2DelegationModelSelection({
 			agentID: "explore",

@@ -5,10 +5,11 @@ import { join } from "node:path"
 import type { Plugin } from "@opencode/plugin"
 import type { SessionContext, SessionPrompt } from "@opencode/plugin/promise/session"
 import type { OhMyOpenCodeConfig } from "../config"
-import { getUltraworkMessage, HYPERPLAN_MESSAGE, TEAM_MESSAGE } from "../hooks/keyword-detector/constants"
+import { getHyperplanUltraworkMessage, getUltraworkMessage, HYPERPLAN_MESSAGE, TEAM_MESSAGE } from "../hooks/keyword-detector/constants"
 import { registerV2ContextHooks } from "./context-hooks"
 import { registerV2Hooks } from "./hooks"
 import { createV2DelegationSettings } from "./delegation-settings"
+import { V2_HYPERPLAN_MODE_PROMPT } from "./team-skill-adapter"
 
 const roots: string[] = []
 afterEach(async () => {
@@ -144,8 +145,8 @@ describe("native v2 context hooks", () => {
 		const system = input.system.map((part) => part.text).join("\n")
 
 		expect(system).toContain("Hyperplan")
-		expect(system).toContain("unavailable")
-		expect(system).toContain("Do not simulate")
+		expect(system).toContain("team_mode.enabled: true")
+		expect(system).toContain("Do not load")
 		expect(system).not.toContain(HYPERPLAN_MESSAGE)
 		expect(system).not.toContain("team_create")
 		await cleanup()
@@ -163,10 +164,44 @@ describe("native v2 context hooks", () => {
 		const system = input.system.map((part) => part.text).join("\n")
 
 		expect(system).toContain("Hyperplan")
-		expect(system).toContain("unavailable")
+		expect(system).toContain("team_mode.enabled: true")
 		expect(system).toContain(getUltraworkMessage("sisyphus", "openai/mock"))
 		expect(system).not.toContain(HYPERPLAN_MESSAGE)
 		expect(system).not.toContain("<hyperplan-ultrawork-mode>")
+		await cleanup()
+	})
+
+	test("enables native Hyperplan instructions only after its own Team manager started", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "omo-v2-team-context-"))
+		roots.push(directory)
+		const { ctx, callbacks } = mockContext(directory)
+		const cleanup = await registerV2ContextHooks(ctx, {
+			team_mode: { enabled: true },
+			default_mode: { ultrawork: true },
+		} as OhMyOpenCodeConfig, { teamModeAvailable: true })
+		const input = contextInput()
+		input.messages = [{ role: "user", content: "Use hyperplan ultrawork team-mode for this task." }] as never
+		await callbacks.get("context")?.(input)
+		const system = input.system.map((part) => part.text)
+		expect(system).toContain(getHyperplanUltraworkMessage("sisyphus", "openai/mock"))
+		expect(system).toContain(TEAM_MESSAGE)
+		expect(system).not.toContain(getUltraworkMessage("sisyphus", "openai/mock"))
+		expect(system.join("\n")).not.toContain("<native-mode-compatibility>")
+		await cleanup()
+	})
+
+	test("keeps independently mentioned Hyperplan and Ultrawork out of the strict combo banner", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "omo-v2-team-context-"))
+		roots.push(directory)
+		const { ctx, callbacks } = mockContext(directory)
+		const cleanup = await registerV2ContextHooks(ctx, { team_mode: { enabled: true } } as OhMyOpenCodeConfig, { teamModeAvailable: true })
+		const input = contextInput()
+		input.messages = [{ role: "user", content: "Use hyperplan for review. Later use ultrawork for execution." }] as never
+		await callbacks.get("context")?.(input)
+		const system = input.system.map((part) => part.text)
+		expect(system).toContain(V2_HYPERPLAN_MODE_PROMPT)
+		expect(system).toContain(getUltraworkMessage("sisyphus", "openai/mock"))
+		expect(system).not.toContain(getHyperplanUltraworkMessage("sisyphus", "openai/mock"))
 		await cleanup()
 	})
 
@@ -229,17 +264,70 @@ describe("native v2 context hooks", () => {
 
 		const selectedChild = contextInput("ses-selected-child")
 		selectedChild.agent = "sisyphus-junior" as never
+		selectedChild.messages = [{ role: "user", content: "Use ultrawork and team-mode for this task" }] as never
 		selectedChild.model = { providerID: "openai", id: "selected-model", variant: "high" } as never
 		await callbacks.get("context")?.(selectedChild)
 		expect(selectedChild.options).toMatchObject({ temperature: 0.7, reasoningEffort: "high", topP: 0.83 })
+		expect(selectedChild.system.map((part) => part.text)).toEqual(["base system"])
 
 		const sibling = contextInput("ses-sibling")
 		sibling.agent = "sisyphus-junior" as never
+		sibling.messages = [{ role: "user", content: "Use ultrawork and team-mode for this task" }] as never
 		sibling.model = { providerID: "openai", id: "selected-model", variant: "high" } as never
 		await callbacks.get("context")?.(sibling)
 		expect(sibling.options).toMatchObject({ temperature: 0.2, reasoningEffort: "low" })
 		expect(sibling.options).not.toHaveProperty("topP")
+		expect(sibling.system.map((part) => part.text)).toEqual(["base system"])
 		expect(sessions.has("ses-selected-child")).toBe(true)
+		await cleanup()
+	})
+
+	test("verified parentless Team members receive their durable model settings", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "omo-v2-context-team-"))
+		roots.push(directory)
+		const { ctx, callbacks } = mockContext(directory, false, [], {}, {
+			"ses-team-member": { id: "ses-team-member", agent: "atlas", projectID: "project", location: { directory } },
+		})
+		await createV2DelegationSettings(ctx.storage, ctx.location).write({
+			sessionID: "ses-team-member", parentSessionID: "ses-lead", agentID: "atlas",
+			model: { providerID: "omoqa", id: "team-model" }, settings: { temperature: 0.63, maxTokens: 4567 },
+		})
+		const cleanup = await registerV2ContextHooks(ctx, {
+			default_mode: { ultrawork: true },
+			team_mode: { enabled: true },
+		} as OhMyOpenCodeConfig, {
+			resolveLogicalParent: async (id) => id === "ses-team-member" ? "ses-lead" : undefined,
+			teamModeAvailable: true,
+		})
+		try {
+			const input = contextInput("ses-team-member")
+			input.agent = "atlas" as never
+			input.messages = [{ role: "user", content: "Use ultrawork and team-mode for this task" }] as never
+			input.model = { providerID: "omoqa", id: "team-model" } as never
+			await callbacks.get("context")?.(input)
+			expect(input.options).toMatchObject({ temperature: 0.63, maxTokens: 4567 })
+			expect(input.system.map((part) => part.text)).toEqual(["base system"])
+		} finally { await cleanup() }
+	})
+
+	test("planner agents suppress Ultrawork and Hyperplan but keep an explicit Team keyword", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "omo-v2-planner-context-"))
+		roots.push(directory)
+		const { ctx, callbacks } = mockContext(directory, false, [], {}, {
+			"ses-planner": { id: "ses-planner", agent: "prometheus", projectID: "project", location: { directory } },
+		})
+		const cleanup = await registerV2ContextHooks(ctx, {
+			default_mode: { ultrawork: true },
+			team_mode: { enabled: true },
+		} as OhMyOpenCodeConfig, { teamModeAvailable: true })
+		const input = contextInput("ses-planner")
+		input.agent = "prometheus" as never
+		input.messages = [{ role: "user", content: "Use team-mode and ultrawork for this task." }] as never
+		await callbacks.get("context")?.(input)
+		const system = input.system.map((part) => part.text)
+		expect(system).toContain(TEAM_MESSAGE)
+		expect(system).not.toContain(getUltraworkMessage("prometheus", "openai/mock"))
+		expect(system).not.toContain(V2_HYPERPLAN_MODE_PROMPT)
 		await cleanup()
 	})
 
@@ -339,11 +427,11 @@ describe("native v2 context hooks", () => {
 		expect(disposed).toEqual(["prompt"])
 	})
 
-	test("unwinds context hooks if a later native permission-hook registration fails", async () => {
+	test("unwinds context and think hooks if a later native permission-hook registration fails", async () => {
 		const directory = await mkdtemp(join(tmpdir(), "omo-v2-context-test-"))
 		roots.push(directory)
 		const { ctx, disposed } = mockContext(directory)
 		await expect(registerV2Hooks(ctx, {} as OhMyOpenCodeConfig)).rejects.toThrow("permission registration failure")
-		expect(disposed).toEqual(["context", "prompt"])
+		expect(disposed).toEqual(["context", "prompt", "context", "prompt"])
 	})
 })

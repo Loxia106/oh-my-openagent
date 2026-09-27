@@ -21,6 +21,7 @@ export interface MessagePart {
 export interface UserPromptSubmitContext {
   sessionId: string
   parentSessionId?: string
+  transcriptPath?: string
   prompt: string
   parts: MessagePart[]
   cwd: string
@@ -75,6 +76,7 @@ export async function executeUserPromptSubmitHooks(
 
   const stdinData: UserPromptSubmitInput = {
     session_id: ctx.sessionId,
+    transcript_path: ctx.transcriptPath,
     cwd: ctx.cwd,
     permission_mode: ctx.permissionMode ?? "bypassPermissions",
     hook_event_name: "UserPromptSubmit",

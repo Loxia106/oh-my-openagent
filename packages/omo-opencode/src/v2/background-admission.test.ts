@@ -10,6 +10,7 @@ import {
 	type BackgroundAdmissionClock,
 	type AdmissionEvent,
 	type AdmissionModel,
+	type VerifiedLogicalParentResolver,
 } from "./background-admission"
 
 const chosenModel: AdmissionModel = { providerID: "provider", id: "family/model/with/slash" }
@@ -42,6 +43,7 @@ function harness(options: {
 	beforeSet?: (key: string, value: unknown) => Promise<void> | void
 	removeFailure?: () => Error | undefined
 	clock?: BackgroundAdmissionClock
+	resolveLogicalParent?: VerifiedLogicalParentResolver
 	wait?: (sessionID: string, signal?: AbortSignal) => Promise<void>
 	get?: (sessionID: string, sessions: Map<string, FakeSession>) => Promise<FakeSession>
 } = {}) {
@@ -98,7 +100,7 @@ function harness(options: {
 	return {
 		values,
 		sessions,
-		create: (config = options.config) => createV2BackgroundAdmission(ctx, config, options.clock),
+		create: (config = options.config) => createV2BackgroundAdmission(ctx, config, options.clock, options.resolveLogicalParent),
 	}
 }
 
@@ -204,6 +206,81 @@ function deferred() {
 }
 
 describe("native V2 background admission", () => {
+	test("verified logical Team children share admission across bind, restart, terminal and resume", async () => {
+		const memberID = "ses-team-member"
+		const h = harness({
+			config: { defaultConcurrency: 1 } as BackgroundTaskConfig,
+			resolveLogicalParent: async (id) => id === memberID ? rootID : undefined,
+		})
+		const first = h.create()
+		const ticket = await first.acquire({ parentSessionID: rootID, model: chosenModel, mode: "new" })
+		await ticket.beginCreate()
+		h.sessions.set(memberID, info(memberID))
+		await ticket.bind(memberID)
+		expect((await first.diagnostics()).activeLeases[0]?.childSessionID).toBe(memberID)
+		await first.dispose()
+
+		const restored = h.create()
+		await restored.ready()
+		expect((await restored.diagnostics()).unhealthy).toBeUndefined()
+		expect((await restored.diagnostics()).activeLeases).toHaveLength(1)
+		await finish(restored, memberID, 10)
+		expect((await restored.diagnostics()).activeLeases).toHaveLength(0)
+		const resume = await restored.acquire({ parentSessionID: rootID, model: chosenModel, mode: "resume", sessionID: memberID })
+		await resume.beginCreate()
+		await resume.bind(memberID)
+		h.sessions.set(memberID, info(memberID, { time: { created: 1, updated: 20, idle: 20 }, outcome: "succeeded" }))
+		await finish(restored, memberID, 20)
+		expect((await restored.diagnostics()).activeLeases).toHaveLength(0)
+		await restored.dispose()
+	})
+
+	test("logical ancestry retains depth and root descendant quotas", async () => {
+		const h = harness({
+			config: { maxDepth: 2, maxLiveDescendantsPerRoot: 1, defaultConcurrency: 0 } as BackgroundTaskConfig,
+			seed: { "ses-team-member": info("ses-team-member") },
+			resolveLogicalParent: async (id) => id === "ses-team-member" ? rootID : undefined,
+		})
+		const manager = h.create()
+		const task = await manager.acquire({ parentSessionID: "ses-team-member", model: chosenModel, mode: "new" })
+		expect((await manager.diagnostics()).activeLeases[0]?.rootSessionID).toBe(rootID)
+		await expect(manager.acquire({ parentSessionID: rootID, model: chosenModel, mode: "new" })).rejects.toThrow("maxLiveDescendantsPerRoot=1")
+		await task.beginCreate()
+		h.sessions.set("ses-nested", info("ses-nested", { parentID: "ses-team-member" }))
+		await task.bind("ses-nested")
+		await expect(manager.acquire({ parentSessionID: "ses-nested", model: chosenModel, mode: "new" })).rejects.toThrow("maxDepth=2")
+		await manager.dispose()
+	})
+
+	test("native parent takes precedence and logical ancestry fails closed on invalid membership", async () => {
+		const h = harness({
+			seed: { "ses-native": info("ses-native", { parentID: rootID }), "ses-invalid": info("ses-invalid") },
+			resolveLogicalParent: async (id) => {
+				if (id !== rootID) throw new Error("unverified Team membership")
+				return undefined
+			},
+		})
+		const manager = h.create()
+		const task = await manager.acquire({ parentSessionID: "ses-native", model: chosenModel, mode: "new" })
+		expect((await manager.diagnostics()).activeLeases[0]?.rootSessionID).toBe(rootID)
+		await task.rollback()
+		await expect(manager.acquire({ parentSessionID: "ses-invalid", model: chosenModel, mode: "new" })).rejects.toThrow("unverified Team membership")
+		expect((await manager.diagnostics()).activeLeases).toHaveLength(0)
+		await manager.dispose()
+	})
+
+	test("logical parents cannot cross project boundaries or create cycles", async () => {
+		for (const cycle of [false, true]) {
+			const h = harness({
+				seed: { "ses-team-member": info("ses-team-member"), "ses-foreign": info("ses-foreign", { projectID: "other" }) },
+				resolveLogicalParent: async (id) => id === "ses-team-member" ? (cycle ? id : "ses-foreign") : undefined,
+			})
+			const manager = h.create()
+			await expect(manager.acquire({ parentSessionID: "ses-team-member", model: chosenModel, mode: "new" })).rejects.toThrow(cycle ? "parent cycle" : "crosses projects")
+			await manager.dispose()
+		}
+	})
+
 	test("uses exact model, provider, and default precedence; zero and fractional limits match V1", () => {
 		const key = "provider/family/model/with/slash"
 		expect(resolveBackgroundAdmissionPool(undefined, key)).toEqual({ key: "model:" + key, limit: 5, unlimited: false })

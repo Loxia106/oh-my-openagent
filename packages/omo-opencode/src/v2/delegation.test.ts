@@ -80,6 +80,7 @@ type HarnessOptions = {
   agentPermissions?: Record<string, Array<{ action: string; resource: string; effect: "allow" | "ask" | "deny" }>>
   sessions?: Record<string, Record<string, unknown>>
   eventSource?: (signal: AbortSignal) => AsyncIterable<any>
+  resolveLogicalParent?: (sessionID: string) => Promise<string | undefined>
 }
 
 async function harness(options: HarnessOptions = {}) {
@@ -201,7 +202,7 @@ async function harness(options: HarnessOptions = {}) {
     },
     event: { subscribe: ({ signal }: { signal: AbortSignal }) => options.eventSource?.(signal) ?? abortableEvents({ signal }) },
   } as unknown as Plugin.Context
-  const runtime = await registerV2Delegation(ctx, (options.config ?? {}) as never, runs)
+  const runtime = await registerV2Delegation(ctx, (options.config ?? {}) as never, runs, { resolveLogicalParent: options.resolveLogicalParent })
   return { ctx, editor, runs, runtime, storage, nativeInputSchema, nativeOutputSchema, toolHooks, permissionHooks, permissionEvents, interrupted, nativeCalls, sessions }
 }
 
@@ -780,6 +781,26 @@ describe("native V2 delegation", () => {
     }
   })
 
+  test("logical Team members and native descendants inherit the lead permission", async () => {
+    const instance = await harness({
+      agentPermissions: { sisyphus: [{ action: "shell", resource: "*", effect: "deny" }] },
+      sessions: {
+        "ses-member": { id: "ses-member", agent: "atlas", permissions: [{ action: "shell", resource: "*", effect: "allow" }] },
+        "ses-descendant": { id: "ses-descendant", parentID: "ses-member", agent: "explore" },
+      },
+      resolveLogicalParent: async (id) => id === "ses-member" ? "ses-parent" : undefined,
+    })
+    try {
+      for (const sessionID of ["ses-member", "ses-descendant"]) {
+        const event = shellPermissionEvent(sessionID)
+        await instance.permissionHooks[0]!(event)
+        expect(event.effect).toBe("deny")
+      }
+    } finally {
+      await instance.runtime.cleanup()
+    }
+  })
+
   test("does not let child allows relax an ancestor's effective deny or ask", async () => {
     const denied = await harness({
       agentPermissions: {
@@ -981,6 +1002,28 @@ describe("native V2 delegation", () => {
       await expect(instance.editor.get("background_cancel")!.execute({ taskId: "ses-foreign" }, toolContext()))
         .rejects.toThrow("not a child")
       expect(instance.interrupted).toEqual(["ses-child"])
+    } finally {
+      await instance.runtime.cleanup()
+    }
+  })
+
+  test("background cancellation handles mixed native and verified Team children without allowing task resume to bypass the native parent contract", async () => {
+    const runs = createV2SubagentRunState(memoryStorage())
+    for (const id of ["ses-native", "ses-member"]) {
+      await runs.recordLaunch(id, { parentSessionID: "ses-parent", startedAt: 100, status: "running", blockedActions: [] })
+    }
+    const instance = await harness({ runState: runs, resolveLogicalParent: async (id) => id === "ses-member" ? "ses-parent" : undefined, sessions: {
+      "ses-native": { id: "ses-native", parentID: "ses-parent", agent: "explore", time: { idle: 100 } },
+      "ses-member": { id: "ses-member", agent: "atlas", time: { idle: 100 } },
+    } })
+    try {
+      await instance.editor.get("background_cancel")!.execute({ all: true }, toolContext())
+      expect(instance.interrupted.sort()).toEqual(["ses-member", "ses-native"])
+      expect(await runs.get("ses-member")).toMatchObject({ status: "interrupted" })
+      const result = await instance.editor.get("background_output")!.execute({ task_id: "ses-member" }, toolContext())
+      expect(result.metadata).toMatchObject({ sessionID: "ses-member", parentSessionID: "ses-parent" })
+      await expect(instance.editor.get("task")!.execute({ task_id: "ses-member", prompt: "Continue" }, toolContext())).rejects.toThrow("not a child")
+      expect(instance.nativeCalls).toHaveLength(0)
     } finally {
       await instance.runtime.cleanup()
     }

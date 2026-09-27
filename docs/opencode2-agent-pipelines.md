@@ -1,0 +1,56 @@
+# OpenCode 2 agent pipeline verification
+
+This personal fork targets OpenCode **2.0.18**. Its source base is OMO **5.0.0**, with the OpenCode conversation-routing changes from **5.0.1** backported. The scope is the built-in agents' prompts, dedicated skills, commands, tool use, delegation, review, and continuation. Desktop notifications, updater/promotional behavior, telemetry and monitor decoration are outside this work.
+
+The following checks run the actual pinned OpenCode executable and the built native plugin. Model responses come from a deterministic localhost fixture; this proves host integration and delivery, not the quality of autonomous reasoning or compatibility with every external provider. Every run has its own project, HOME/XDG configuration and database. Failed attempts and successful receipts are retained locally under `.omo/evidence/`; those private runtime captures are not shipped in Git. The QA drivers are included in `script/`.
+
+## Agent coverage
+
+| Agent | Verified native conversation surface | Additional workflow acceptance |
+| --- | --- | --- |
+| Sisyphus | Actual-model prompt, dedicated skills and primary model policy | Explore → background Librarian → category Junior with a skill → same Junior resume → Oracle receiving actual results → final parent response |
+| Hephaestus | Supported actual-model prompt, dedicated skills and primary model policy | Native hashline rename/delete, image/PDF delegation, task-local tmux and actual LSP diagnostics |
+| Prometheus | Planning prompt, dedicated skills and role restrictions | Interview → Explore/Metis → restricted plan writing → Momus rejection/revision/approval |
+| Atlas | Orchestrator prompt, dedicated skills and role restrictions | `/ulw-execute` → Junior implementation → rejected/missing final verdicts → approved reviewers → explicit user approval → checked completion |
+| Sisyphus-Junior | Worker prompt and dedicated skills | Native category implementation/resume, plus five managed Team role sessions |
+| Explore | Discovery prompt and dedicated skills | Foreground discovery result consumed by Sisyphus |
+| Librarian | Research prompt and dedicated skills | Background research result consumed by Sisyphus |
+| Oracle | Review prompt and dedicated skills | Reviewed the preceding discovery, research, implementation and resumed verification results |
+| Metis | Analysis prompt and dedicated skills | Requirements analysis consumed by Prometheus before the plan draft |
+| Momus | Review prompt and dedicated skills | Plan revision feedback and final-wave rejection/approval consumed by the parent |
+| Multimodal-Looker | Media-reader prompt and dedicated skills | `look_at` creates owned children; PNG and PDF source bytes reach their model requests with matching hashes and results return to the parent |
+
+Direct-agent QA passed 139 checks across 15 native sessions covering all eleven agents. Those sessions had no native parents, so that receipt alone is not a cross-agent test. The separate Sisyphus workflow passed 11 checks across one parent and four children, with 14 verified local model requests and no extra child on resume. A later combined Sisyphus/Prometheus/Atlas run passed 20 checks with 50 local requests and 15 successful native sessions. Planning and execution reused one parent, with nine owned children; final reviewer approval did not close the plan before the explicit native user prompt.
+
+## Shared conversation behavior
+
+- Advisory hooks: 13 actual-host checks cover real comment-checker execution after write/edit/apply_patch, delegation error guidance, category/skill reminders, deduplication and disabled controls.
+- Think mode and webfetch: 22 checks cover a high-reasoning first request and normal next request in the same session, a successful local redirect chain, and a bounded native redirect-loop transport error. The last result is not proof of the old OMO configurable redirect-count policy or a timeout firing.
+- Team/Hyperplan: 22 checks cover five roles with at most two concurrently executing members, full adapted skill delivery, two-way native mailbox prompts, persisted create/claim/in-progress/completed task state, and logical deletion that preserves native conversations and OMO ancestry. Members are standalone native sessions with durable logical ancestry; the adapter uses the current project location. This receipt does not establish process-restart recovery or autonomous multi-round debate quality.
+- Hephaestus tool surfaces: 12 checks cover native file rename/delete, exact PNG/PDF delivery through separate Multimodal-Looker children, tmux execution and prohibited-command handling, and a real TypeScript TS2322 diagnostic through the local LSP server. Nineteen local model requests served three successful native sessions. The owned daemon and tmux server were stopped afterward.
+- Goal flow: 37 actual-host checks cover opt-in initialization from the first admitted user message with an immediate model response, automatic continuation, native pause/resume/completion of the same goal, preservation of an existing goal, and rejection/child exclusions. The goal exists for continuation; its extra instructions are not guaranteed in the first model context. Thirteen local requests served four executed sessions; the separately rejected session had no model turn.
+- Claude hooks: 19 actual-host checks cover prompt rejection before admission/provider execution, a stable pending-inbox notice and a usable follow-up; Stop continuation with `stop_hook_active: false` then `true`; tool input rewriting, denial and native approval requests; explicit native-deny precedence; post-tool success/failure context; transcript-fed compaction and a blocked second compaction; and child-session tool hooks. Eighteen correctly attributed local requests served eight sessions. Seven ended successfully; the compaction session deliberately ended failed after `continue:false`. Transcripts contain the available native context, not archived history. Post-tool `continue:false` adds advisory context; it does not roll back execution.
+- Primary runtime fallback: 12 actual-host checks cover a configured primary returning 429, the first fallback returning 429, and the second succeeding in the same session. Both fallback token limits reach the wire, the original user prompt is not duplicated, the two-attempt chain stops when exhausted, and an agent with an empty chain does not switch models. The fixture suppresses the host retry loop to reach terminal failures quickly; production recovery runs after a terminal failure. A separate delegated-recovery fixture passed 25 checks with 14 local requests: foreground recovery stayed within one parent tool call and reused the failed child; background failure remained visible without a detached retry, then an explicit `task_id` resume reused that child on its configured backup; a child without a fallback chain preserved its error. Both fixtures suppress only the host retry delay for bounded tests. Live-request timeout escalation and the separate legacy `model_fallback` controller are not implemented.
+
+## Accepted runtime artifacts
+
+| Check | Server SHA-256 | Local receipt |
+| --- | --- | --- |
+| Direct agents | `10a7f160c55bf7ed4dff1b1008faa4a43c04ea1c71bc0d45b93962006a90e3d7` | `20260927-agent-pipeline-final-r13/conductor-review.json` |
+| Advisory hooks | `e889bb900288f53110c9350d261a99a80f9253df937ca19ea4fb929030cbdd81` | `20260927-conversation-advisory-r6-fixed-20260927T151123/attempt-1790489483887/conductor-review.json` |
+| Think/webfetch | `e889bb900288f53110c9350d261a99a80f9253df937ca19ea4fb929030cbdd81` | `20260927-think-webfetch-r6-attempt-5/conductor-review.json` |
+| Sisyphus cross-agent chain | `e889bb900288f53110c9350d261a99a80f9253df937ca19ea4fb929030cbdd81` | `20260927-cross-agent-workflow-r6-oracle-context/attempt-1790490845369/conductor-review.json` |
+| Sisyphus + Prometheus/Atlas workflow | `ac4c41f2dac031e0c0b8c35dce3c3d161327c8ae6c3125a190d7671dabf20797` | `20260927-cross-agent-workflow-final-r14/attempt-1790500970803/conductor-review.json` |
+| Team/Hyperplan mechanics | `10a7f160c55bf7ed4dff1b1008faa4a43c04ea1c71bc0d45b93962006a90e3d7` | `20260927-team-pipeline-final-r13/conductor-review.json` |
+| Hephaestus file/media/terminal/LSP | `add6cd9941eadd3d5bdad7bd35401f83ee8af5351c5580f29014bd886ce46475` | `20260927-hephaestus-tools-r9-pdf-lsp-rerun2/attempt-1790495785036/conductor-review.json` |
+| Goal initialization and continuation | `10a7f160c55bf7ed4dff1b1008faa4a43c04ea1c71bc0d45b93962006a90e3d7` | `20260927-goal-auto-start/conductor-review.json` |
+| Primary runtime fallback | `10a7f160c55bf7ed4dff1b1008faa4a43c04ea1c71bc0d45b93962006a90e3d7` | `20260927-primary-runtime-r13/conductor-review.json` |
+| Delegated provider-error recovery | `d45f2c8acab3c536e30f17b61efe4b20f2ce2265b52f71664243b16720bde798` | `20260927-delegation-runtime-recovery-r15/conductor-review.json` |
+| Claude prompt/Stop foundation (earlier checkpoint) | `add6cd9941eadd3d5bdad7bd35401f83ee8af5351c5580f29014bd886ce46475` | `20260927-opencode2-claude-hooks/attempt-1790495823832/conductor-review.json` |
+| Claude transcript/tool/compaction phases | `10a7f160c55bf7ed4dff1b1008faa4a43c04ea1c71bc0d45b93962006a90e3d7` | `20260927-claude-hooks-r13/attempt-1790500564244/conductor-review.json` |
+
+Receipts are relative to `.omo/evidence/`. Different bundle hashes are deliberately kept distinct: passing an earlier artifact is not described as a rerun of the latest artifact. The final r15 candidate has server SHA-256 `d45f2c8acab3c536e30f17b61efe4b20f2ce2265b52f71664243b16720bde798` and TUI SHA-256 `352bf3994f3a827fb93ddaedf74efaecaa70f385b5de1b529d08938598dd5d59`. Native package and QA-script typechecks, the build, and **491 tests / 2,013 assertions across 53 v2 files** passed. The affected shared Claude loaders and native build/installer tests separately passed **38 tests / 92 assertions**. The final source change rejects stale provider errors when a newer assistant message exists; the delegated recovery driver passed all 25 checks again on that final artifact. The preceding integrated candidate's direct-agent, Team, goal, primary-recovery and Claude checks remain identified by their actual hashes above.
+
+See [the compatibility matrix](opencode2-compatibility.md) for configuration boundaries and [installation instructions](opencode2-compatibility.md#local-fork-installation). Team/Hyperplan requires `team_mode.enabled: true`; goal tools require `goal.enabled: true`. Optional local tools and external MCP services require their own dependencies and configuration.
+
+[한국어 설치·실행 안내](opencode2-quickstart.ko.md)

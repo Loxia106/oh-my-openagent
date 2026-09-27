@@ -6,7 +6,7 @@ import type { OhMyOpenCodeConfig } from "../config"
 import type { LoadedSkill } from "../features/opencode-skill-loader/types"
 import { createSisyphusAgent } from "../agents/sisyphus-agent-factory"
 import { createSisyphusJuniorAgentWithOverrides } from "../agents/sisyphus-junior"
-import { buildV2AgentConfigs, registerV2Agents, toV2PermissionRules } from "./agents"
+import { buildV2AgentConfigs, createV2BuiltinAgentPromptRenderer, registerV2Agents, toV2PermissionRules } from "./agents"
 import { V2ModelCatalog } from "./model-resolution"
 
 function loadedSkill(
@@ -22,9 +22,12 @@ function loadedSkill(
   }
 }
 
-function sisyphusPrompt(loadedSkills: readonly LoadedSkill[]): string {
+function sisyphusPrompt(
+  loadedSkills: readonly LoadedSkill[],
+  config: OhMyOpenCodeConfig = {} as OhMyOpenCodeConfig,
+): string {
   const configs = buildV2AgentConfigs({
-    config: {} as OhMyOpenCodeConfig,
+    config,
     catalog: new V2ModelCatalog().snapshot,
     loadedSkills,
     directory: process.cwd(),
@@ -155,6 +158,83 @@ describe("native v2 agents", () => {
     })
   })
 
+  test("uses native child session IDs in built-in background guidance without rewriting user prompt additions", () => {
+    const catalog = new V2ModelCatalog()
+    const configs = buildV2AgentConfigs({
+      config: {} as OhMyOpenCodeConfig,
+      catalog: catalog.snapshot,
+      loadedSkills: [],
+      directory: process.cwd(),
+    })
+
+    for (const name of ["sisyphus", "hephaestus"] as const) {
+      expect(configs[name]?.prompt).toContain('background_output(task_id="ses_...")')
+      expect(configs[name]?.prompt).not.toContain("bg_")
+    }
+
+    const withUserAppend = buildV2AgentConfigs({
+      config: { agents: { sisyphus: { prompt_append: "Literal user example: bg_user_task" } } } as OhMyOpenCodeConfig,
+      catalog: catalog.snapshot,
+      loadedSkills: [],
+      directory: process.cwd(),
+    })
+    expect(withUserAppend.sisyphus?.prompt).toContain("Literal user example: bg_user_task")
+
+    const render = createV2BuiltinAgentPromptRenderer({
+      config: { agents: { sisyphus: { prompt: "User prompt keeps bg_user_text" } } } as OhMyOpenCodeConfig,
+      catalog: catalog.snapshot,
+      loadedSkills: [],
+      directory: process.cwd(),
+    })
+    expect(render("sisyphus", "openai/gpt-5.5")).toContain("User prompt keeps bg_user_text")
+  })
+
+  test("respects planner_enabled and keeps Prometheus user prompts as additions to the native plan prompt", async () => {
+    const catalog = new V2ModelCatalog()
+    const base = buildV2AgentConfigs({
+      config: {} as OhMyOpenCodeConfig,
+      catalog: catalog.snapshot,
+      loadedSkills: [],
+      directory: process.cwd(),
+    }).prometheus?.prompt ?? ""
+    expect(base.length).toBeGreaterThan(0)
+
+    const configured = buildV2AgentConfigs({
+      config: {
+        sisyphus_agent: { planner_enabled: true },
+        categories: { planning: { prompt_append: "Category planning addition" } },
+        agents: {
+          prometheus: {
+            category: "planning",
+            prompt: "User plan prompt addition",
+            prompt_append: "User prompt_append addition",
+            description: "Custom plan description",
+          },
+        },
+      } as OhMyOpenCodeConfig,
+      catalog: catalog.snapshot,
+      loadedSkills: [],
+      directory: process.cwd(),
+    }).prometheus
+    expect(configured?.prompt?.startsWith(base)).toBe(true)
+    expect(configured?.prompt).toContain("Category planning addition")
+    expect(configured?.prompt).toContain("User plan prompt addition")
+    expect(configured?.prompt).toContain("User prompt_append addition")
+    expect(configured?.description).toBe("Custom plan description")
+
+    const disabled = buildV2AgentConfigs({
+      config: { sisyphus_agent: { planner_enabled: false } } as OhMyOpenCodeConfig,
+      catalog: catalog.snapshot,
+      loadedSkills: [],
+      directory: process.cwd(),
+    })
+    expect(disabled.prometheus).toBeUndefined()
+
+    const existing = new Map<string, any>([["prometheus", { id: "prometheus", mode: "primary" }]])
+    await registerAgents({ sisyphus_agent: { planner_enabled: false } } as OhMyOpenCodeConfig, existing)
+    expect(existing.has("prometheus")).toBe(false)
+  })
+
   test("keeps model-disabled skills and unsupported team builtins out of native dynamic agent prompts", () => {
     const prompt = sisyphusPrompt([
       loadedSkill("qa-manual-only", "project", { disableModelInvocation: true }),
@@ -169,14 +249,148 @@ describe("native v2 agents", () => {
     expect(skills).not.toContain("metadata-manual-only")
     expect(skills).not.toContain("security-research")
     expect(skills).not.toContain("security-review")
+    expect(skills).not.toContain("team-mode")
   })
 
-  test("preserves nonbuiltin custom skills that share names with unsupported team builtins", () => {
-    for (const scope of ["project", "shared"] as const) {
-      const prompt = sisyphusPrompt([loadedSkill("security-research", scope)])
-      expect(prompt).toContain("security-research")
-      expect(prompt).not.toContain("security-review")
+  test("includes builtin team skills in agent prompts only when team mode is enabled", () => {
+    const disabledSkills = availableSkillsSection(sisyphusPrompt([]))
+    expect(disabledSkills).not.toContain("security-research")
+    expect(disabledSkills).not.toContain("security-review")
+    expect(disabledSkills).not.toContain("team-mode")
+
+    const enabledSkills = availableSkillsSection(sisyphusPrompt([], {
+      team_mode: { enabled: true },
+    } as OhMyOpenCodeConfig))
+    expect(enabledSkills).toContain("security-research")
+    expect(enabledSkills).toContain("security-review")
+    expect(enabledSkills).toContain("team-mode")
+  })
+
+  test("preserves nonbuiltin custom skills sharing names with team builtins when team mode is disabled", () => {
+    for (const name of ["security-research", "security-review", "team-mode"]) {
+      for (const scope of ["project", "shared"] as const) {
+        const skills = availableSkillsSection(sisyphusPrompt([loadedSkill(name, scope)]))
+        expect(skills).toContain(name)
+      }
     }
+  })
+
+  test("does not reveal a team-named skill restricted to another agent", () => {
+    const restricted = loadedSkill("security-review", "project", {
+      definition: {
+        name: "security-review",
+        description: "Hephaestus-only security review fixture",
+        template: "Review as Hephaestus.",
+        agent: "hephaestus",
+      },
+    })
+    const configs = buildV2AgentConfigs({
+      config: { team_mode: { enabled: true } } as OhMyOpenCodeConfig,
+      catalog: new V2ModelCatalog().snapshot,
+      loadedSkills: [restricted],
+      directory: process.cwd(),
+    })
+
+    expect(availableSkillsSection(configs.sisyphus?.prompt ?? "")).not.toContain("security-review")
+    expect(availableSkillsSection(configs.hephaestus?.prompt ?? "")).toContain("security-review")
+  })
+
+  test("injects explicit project skill overrides from the merged V2 catalog", () => {
+    const projectSkill = loadedSkill("frontend", "project", {
+      definition: { name: "frontend", description: "Project override", template: "PROJECT_FRONTEND_SKILL_BODY" },
+    })
+    const config = { agents: { sisyphus: { skills: ["frontend"] } } } as OhMyOpenCodeConfig
+    const input = {
+      config,
+      catalog: new V2ModelCatalog().snapshot,
+      loadedSkills: [projectSkill],
+      directory: "/tmp/omo-v2-agent-test",
+    }
+
+    const registered = buildV2AgentConfigs(input).sisyphus?.prompt ?? ""
+    const rendered = createV2BuiltinAgentPromptRenderer(input)("sisyphus", "openai/gpt-5.5") ?? ""
+    expect(registered.startsWith("PROJECT_FRONTEND_SKILL_BODY")).toBe(true)
+    expect(rendered.startsWith("PROJECT_FRONTEND_SKILL_BODY")).toBe(true)
+    expect(registered).not.toContain("Create a visual language")
+  })
+
+  test("injects adapted builtin skill bodies and permits explicit manual-only skill selection", () => {
+    const adaptedTeamSkill = loadedSkill("team-mode", "builtin", {
+      definition: { name: "team-mode", description: "Adapted native team skill", template: "V2_ADAPTED_TEAM_MODE_BODY" },
+      lazyContent: { loaded: true, content: "STALE_PRE_ADAPTATION_TEAM_BODY", load: async () => "STALE_PRE_ADAPTATION_TEAM_BODY" },
+    })
+    const manualSkill = loadedSkill("qa-manual-only", "project", {
+      disableModelInvocation: true,
+      definition: { name: "qa-manual-only", description: "Explicit selection", template: "EXPLICIT_MANUAL_ONLY_BODY" },
+    })
+    const config = {
+      team_mode: { enabled: true },
+      agents: { sisyphus: { skills: ["team-mode", "qa-manual-only"] } },
+    } as OhMyOpenCodeConfig
+    const prompt = buildV2AgentConfigs({
+      config,
+      catalog: new V2ModelCatalog().snapshot,
+      loadedSkills: [adaptedTeamSkill, manualSkill],
+      directory: "/tmp/omo-v2-agent-test",
+    }).sisyphus?.prompt ?? ""
+
+    expect(prompt.startsWith("V2_ADAPTED_TEAM_MODE_BODY\n\nEXPLICIT_MANUAL_ONLY_BODY")).toBe(true)
+    expect(prompt).not.toContain("STALE_PRE_ADAPTATION_TEAM_BODY")
+  })
+
+  test("omits disabled aliases and explicit skills restricted to a different agent", () => {
+    const restricted = loadedSkill("qa-hephaestus-only", "project", {
+      definition: {
+        name: "qa-hephaestus-only",
+        description: "Hephaestus only",
+        template: "HEPHAESTUS_ONLY_EXPLICIT_BODY",
+        agent: "hephaestus",
+      },
+    })
+    const disabled = loadedSkill("qa-disabled-explicit", "project", {
+      definition: { name: "qa-disabled-explicit", description: "Disabled", template: "DISABLED_EXPLICIT_BODY" },
+    })
+    const config = {
+      disabled_skills: ["qa-disabled-explicit"],
+      agents: {
+        sisyphus: { skills: ["qa-hephaestus-only", "qa-disabled-explicit"] },
+        hephaestus: { skills: ["qa-hephaestus-only", "qa-disabled-explicit"] },
+      },
+    } as OhMyOpenCodeConfig
+    const configs = buildV2AgentConfigs({
+      config,
+      catalog: new V2ModelCatalog().snapshot,
+      loadedSkills: [restricted, disabled],
+      directory: "/tmp/omo-v2-agent-test",
+    })
+
+    expect(configs.sisyphus?.prompt).not.toContain("HEPHAESTUS_ONLY_EXPLICIT_BODY")
+    expect(configs.sisyphus?.prompt).not.toContain("DISABLED_EXPLICIT_BODY")
+    expect(configs.hephaestus?.prompt).toContain("HEPHAESTUS_ONLY_EXPLICIT_BODY")
+    expect(configs.hephaestus?.prompt).not.toContain("DISABLED_EXPLICIT_BODY")
+  })
+
+  test("applies git-master settings to the resolved V2 catalog template", () => {
+    const projectGitMaster = loadedSkill("git-master", "project", {
+      definition: {
+        name: "git-master",
+        description: "Project git workflow override",
+        template: "## MODE DETECTION (FIRST STEP)\nUse the project git workflow.",
+      },
+    })
+    const prompt = buildV2AgentConfigs({
+      config: {
+        git_master: { git_env_prefix: "QA_GIT_MASTER=1", commit_footer: true },
+        agents: { sisyphus: { skills: ["git-master"] } },
+      } as OhMyOpenCodeConfig,
+      catalog: new V2ModelCatalog().snapshot,
+      loadedSkills: [projectGitMaster],
+      directory: "/tmp/omo-v2-agent-test",
+    }).sisyphus?.prompt ?? ""
+
+    expect(prompt).toContain("QA_GIT_MASTER=1")
+    expect(prompt).toContain("Ultraworked with [Sisyphus]")
+    expect(prompt).toContain("Use the project git workflow.")
   })
 
   test("manual custom overrides suppress same-named builtin entries re-added by prompt factories", () => {
@@ -231,6 +445,15 @@ describe("native v2 agents", () => {
     expect(toV2PermissionRules({ permission: { bash: "allow" } } as AgentConfig, "librarian")).toEqual([
       { action: "shell", resource: "*", effect: "allow" },
     ])
+  })
+
+  test("places agent-restricted skill denials after authored broad and exact allows", () => {
+    const rules = toV2PermissionRules({
+      permission: { skill: { "*": "allow", "hephaestus-only": "allow" } },
+      tools: { skill: true },
+    } as unknown as AgentConfig, "sisyphus", undefined, ["hephaestus-only"])
+
+    expect(rules.at(-1)).toEqual({ action: "skill", resource: "hephaestus-only", effect: "deny" })
   })
 
   test("preserves the host default unless an enabled OMO primary agent is explicitly selected", async () => {

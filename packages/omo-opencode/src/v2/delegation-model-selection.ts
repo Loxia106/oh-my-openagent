@@ -26,6 +26,44 @@ export type DelegationModelChoice = {
 	/** Flat OpenCode request options. Generation names use the native SDK spelling. */
 	readonly settings: Readonly<Record<string, unknown>>
 	readonly source: "configured" | "requirement" | "agent" | "parent" | "default"
+	/** OMO category that selected this model, when the caller explicitly selected a task category. */
+	readonly originCategory?: string
+}
+
+export type DelegationFallbackState = {
+	readonly originCategory?: string
+	readonly source: "agent" | "category"
+	readonly candidates: readonly DelegationModelChoice[]
+	/** Index of the last selected fallback; -1 means the initial model is still active. */
+	readonly currentIndex: number
+	readonly attempts: number
+	readonly failedAt: Readonly<Record<string, number>>
+}
+
+export function delegationModelKey(model: DelegationModelRef): string {
+	const variant = model.variant && model.variant !== "default" ? model.variant : ""
+	return `${model.providerID}/${model.id}#${variant}`
+}
+
+/** Advance exactly one configured fallback and persist its failed predecessor. */
+export function advanceV2DelegationFallback(
+	state: DelegationFallbackState,
+	failedModel: DelegationModelRef,
+	options: { readonly now: number; readonly cooldownMs: number; readonly maxAttempts: number },
+): { readonly state: DelegationFallbackState; readonly choice: DelegationModelChoice } | undefined {
+	if (state.attempts >= options.maxAttempts) return undefined
+	const failedAt = { ...state.failedAt, [delegationModelKey(failedModel)]: options.now }
+	for (let index = state.currentIndex + 1; index < state.candidates.length; index += 1) {
+		const candidate = state.candidates[index]
+		if (!candidate || delegationModelKey(candidate.model) === delegationModelKey(failedModel)) continue
+		const lastFailure = failedAt[delegationModelKey(candidate.model)]
+		if (lastFailure !== undefined && options.now - lastFailure < options.cooldownMs) continue
+		return {
+			choice: candidate,
+			state: { ...state, currentIndex: index, attempts: state.attempts + 1, failedAt },
+		}
+	}
+	return undefined
 }
 
 type ModelEntry = string | FallbackModelObject
@@ -52,6 +90,10 @@ export type ResolveDelegationModelInput = {
 function fallbackEntries(value: FallbackModels | undefined): ModelEntry[] {
 	if (value === undefined) return []
 	return typeof value === "string" ? [value] : [...value]
+}
+
+function hasFallbackModels(holder: { fallback_models?: FallbackModels } | undefined): boolean {
+	return holder?.fallback_models !== undefined
 }
 
 function modelEntries(holder: { model?: string; models?: readonly ModelEntry[]; fallback_models?: FallbackModels } | undefined): ModelEntry[] {
@@ -327,6 +369,67 @@ export function resolveV2DelegationModelSelection(input: ResolveDelegationModelI
 	const parent = choiceFromRef(input.parentModel, "parent", input.catalog, disabled, inheritedBase, variantOverride)
 	if (parent) return parent
 	return choiceFromRef(input.defaultModel, "default", input.catalog, disabled, inheritedBase, variantOverride)
+}
+
+/**
+ * Resolve only explicitly configured runtime fallback entries, retaining the
+ * full native settings for each candidate. Runtime fallback must not invent a
+ * provider or silently substitute the model-requirement chain.
+ */
+export function resolveV2DelegationFallbackCandidates(
+	input: ResolveDelegationModelInput & { readonly currentModel?: DelegationModelRef },
+): { readonly source: "agent" | "category"; readonly candidates: readonly DelegationModelChoice[] } | undefined {
+	const disabled = input.disabledProviders ?? []
+	const agentBase = mergeAgentBase(input.agentCategory, input.agentConfig)
+	let entries: ModelEntry[] = []
+	let base: ModelHolder | CategoryHolder | undefined
+	let source: "agent" | "category" = "agent"
+	let chainChosen = false
+
+	if (input.categoryName) {
+		if (hasFallbackModels(input.categoryOverride)) {
+			entries = fallbackEntries(input.categoryOverride?.fallback_models)
+			base = input.categoryConfig
+			source = "category"
+			chainChosen = true
+		} else if (hasFallbackModels(input.categoryConfig)) {
+			entries = fallbackEntries(input.categoryConfig?.fallback_models)
+			base = input.categoryConfig
+			source = "category"
+			chainChosen = true
+		}
+	}
+
+	// Preserve the legacy precedence: an agent's own fallback chain wins over
+	// its inherited category chain; an explicit task category wins over both.
+	if (!chainChosen && hasFallbackModels(input.agentConfig)) {
+		entries = fallbackEntries(input.agentConfig?.fallback_models)
+		base = agentBase
+		source = "agent"
+		chainChosen = true
+	}
+	if (!chainChosen && hasFallbackModels(input.agentCategory)) {
+		entries = fallbackEntries(input.agentCategory?.fallback_models)
+		base = agentBase
+		source = "category"
+		chainChosen = true
+	}
+	if (!chainChosen || entries.length === 0) return undefined
+
+	const seen = new Set<string>()
+	const candidates: DelegationModelChoice[] = []
+	for (const entry of entries) {
+		const selected = resolveConfiguredCandidate(entry, base, input.catalog, disabled)
+		if (!selected) continue
+		const key = `${selected.model.providerID}/${selected.model.id}#${selected.model.variant ?? ""}`
+		if (seen.has(key)) continue
+		seen.add(key)
+		if (input.currentModel && key === `${input.currentModel.providerID}/${input.currentModel.id}#${input.currentModel.variant ?? ""}`) continue
+		candidates.push(selected)
+	}
+	// An explicitly configured chain with no enabled/currently usable entry is
+	// still a constraint, but it cannot seed a durable retry state.
+	return candidates.length > 0 ? { source, candidates } : undefined
 }
 
 export function categoryModelCandidates(config: CategoryHolder): readonly ModelEntry[] {

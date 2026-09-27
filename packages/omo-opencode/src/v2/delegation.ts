@@ -13,6 +13,7 @@ import { addV2LookAtTool } from "./tool-look-at"
 import { readOwnedChildSession, type V2SessionStatus } from "./session-history"
 import type { V2SubagentRunState } from "./task-state"
 import { createV2DelegationAdmission, resolveV2DelegationModelChoice } from "./delegation-admission"
+import type { V2BackgroundAdmission, VerifiedLogicalParentResolver } from "./background-admission"
 import type { DelegationModelChoice } from "./delegation-model-selection"
 
 type NativeSubagent = Info & { readonly id: string }
@@ -170,6 +171,7 @@ async function parentRestriction(
   sessionID: string,
   action: string,
   resource: string,
+  resolveLogicalParent?: VerifiedLogicalParentResolver,
 ): Promise<"allow" | "ask" | "deny"> {
   const agents = (await ctx.agent.list()).data
   let child: SessionWithPermissions | undefined = await ctx.session.get({ sessionID })
@@ -186,8 +188,14 @@ async function parentRestriction(
     if (ownEffect === "deny") return "deny"
     if (ownEffect === "ask") result = "ask"
   }
-  while (child?.parentID && depth < 32) {
-    const parent = await ctx.session.get({ sessionID: child.parentID })
+  const visited = new Set([sessionID])
+  while (child) {
+    const parentID = child.parentID ?? await resolveLogicalParent?.(child.id)
+    if (!parentID) break
+    if (depth >= 32 || visited.has(parentID)) throw new Error("Subagent permission ancestry is cyclic or exceeds the traversal bound.")
+    visited.add(parentID)
+    const parent = await ctx.session.get({ sessionID: parentID })
+    if (parent.id !== parentID) throw new Error("Subagent permission ancestor identity mismatch.")
     const parentAgent = agents.find((agent) => agent.id === parent.agent)
     const rules = [
       ...(parentAgent?.permissions ?? []),
@@ -207,6 +215,7 @@ export async function registerV2SubagentPermissionGuard(
   ctx: Plugin.Context,
   runs: V2SubagentRunState,
   invocations: AliasInvocations = new Map(),
+  resolveLogicalParent?: VerifiedLogicalParentResolver,
 ) {
   const permission = await ctx.permission.hook("evaluate", async (event) => {
     const run = await runs.get(event.sessionID)
@@ -225,7 +234,7 @@ export async function registerV2SubagentPermissionGuard(
     try {
       let inherited: "allow" | "ask" | "deny" = "allow"
       for (const resource of event.resources) {
-        const result = await parentRestriction(ctx, event.sessionID, event.action, resource)
+        const result = await parentRestriction(ctx, event.sessionID, event.action, resource, resolveLogicalParent)
         if (result === "deny") {
           inherited = "deny"
           break
@@ -353,6 +362,7 @@ function registerToolAliases(input: {
   runs: V2SubagentRunState
   childSessions: Map<string, Set<string>>
   invocations: AliasInvocations
+  resolveLogicalParent?: VerifiedLogicalParentResolver
 }) {
   const { editor, ctx, config, native, nativeSkill, admission, runs, childSessions, invocations } = input
   const nativeRead = editor.get("read")
@@ -408,7 +418,14 @@ function registerToolAliases(input: {
       ...(request.sessionID ? { sessionID: request.sessionID } : {}),
       ...(request.background ? { background: true } : {}),
     }
-    const result = await admission.invokeWithSelection(native, nativeInput, delegatedContext, request.modelSelection)
+    const preparedFallback = request.sessionID
+      ? await admission.prepareExplicitFallbackResume(request.sessionID, toolContext.sessionID, agentID)
+      : undefined
+    const result = await admission.invokeWithSelection(
+      native, nativeInput, delegatedContext,
+      preparedFallback?.choice ?? request.modelSelection,
+      preparedFallback,
+    )
     return result
   }
 
@@ -551,7 +568,7 @@ function registerToolAliases(input: {
       options: { codemode: false },
       execute: async (args, context) => {
         if (args.task_id.startsWith("bg_")) throw new ToolError({ message: "This native V2 integration returns child sessionIDs, not bg_ IDs. Pass the sessionID from task metadata." })
-        const child = await readOwnedChildSession(ctx, context.sessionID, args.task_id)
+        await readOwnedChildSession(ctx, context.sessionID, args.task_id, input.resolveLogicalParent)
         let run = await runs.get(args.task_id)
         if (run && run.parentSessionID !== context.sessionID) throw new ToolError({ message: `Session ${args.task_id} is not owned by this parent session.` })
         let waitTimedOut = false
@@ -610,7 +627,7 @@ function registerToolAliases(input: {
           fromEnd: args.from_end,
           thinkingMaxChars: args.thinking_max_chars,
         }))
-        return { content: `${base}\n\n${transcript}`, metadata: { sessionID: args.task_id, status, parentSessionID: child.parentID } }
+        return { content: `${base}\n\n${transcript}`, metadata: { sessionID: args.task_id, status, parentSessionID: context.sessionID } }
       },
     })
   }
@@ -628,7 +645,7 @@ function registerToolAliases(input: {
         if (sessionIDs.length === 0) throw new ToolError({ message: "Provide taskId or set all=true when tracked running children exist." })
         const interrupted: string[] = []
         for (const sessionID of sessionIDs) {
-          await readOwnedChildSession(ctx, context.sessionID, sessionID)
+          await readOwnedChildSession(ctx, context.sessionID, sessionID, input.resolveLogicalParent)
           const run = await runs.get(sessionID)
           if (run && run.parentSessionID !== context.sessionID) throw new ToolError({ message: `Session ${sessionID} is not owned by this parent session.` })
           if (run && run.status !== "running") continue
@@ -643,6 +660,7 @@ function registerToolAliases(input: {
 }
 
 export type V2DelegationRuntime = {
+	readonly admission: Pick<V2BackgroundAdmission, "acquire">
   readonly runs: V2SubagentRunState
   readonly childSessions: Map<string, Set<string>>
   readonly cleanup: () => Promise<void>
@@ -652,6 +670,7 @@ export async function registerV2Delegation(
   ctx: Plugin.Context,
   config: OhMyOpenCodeConfig,
   runs: V2SubagentRunState,
+  options: { resolveLogicalParent?: VerifiedLogicalParentResolver; isStopped?: (sessionID: string) => boolean | Promise<boolean> } = {},
 ): Promise<V2DelegationRuntime> {
   const childSessions = new Map<string, Set<string>>()
   const invocations: AliasInvocations = new Map()
@@ -661,6 +680,8 @@ export async function registerV2Delegation(
     runs,
     childSessions,
     isAliasInvocation: (context) => invocations.has(invocationKey(context)),
+    resolveLogicalParent: options.resolveLogicalParent,
+    isStopped: options.isStopped,
   })
   let permissionRegistration: Awaited<ReturnType<typeof registerV2SubagentPermissionGuard>> | undefined
   let toolRegistration: Awaited<ReturnType<Plugin.Context["tool"]["transform"]>> | undefined
@@ -668,7 +689,7 @@ export async function registerV2Delegation(
   let eventLoop: Promise<void> | undefined
   try {
     await delegationAdmission.ready()
-    permissionRegistration = await registerV2SubagentPermissionGuard(ctx, runs, invocations)
+    permissionRegistration = await registerV2SubagentPermissionGuard(ctx, runs, invocations, options.resolveLogicalParent)
     toolRegistration = await ctx.tool.transform((editor) => {
       const nativeInput = editor.get("subagent")
       if (!nativeInput) throw new Error("OpenCode V2 native subagent tool is unavailable; OMO delegation cannot be registered safely.")
@@ -678,7 +699,7 @@ export async function registerV2Delegation(
       }
       const nativeSkill = editor.get("skill")
       if (toolDisabled(config, "task")) editor.remove("subagent")
-      registerToolAliases({ editor, ctx, config, native, nativeSkill, admission: delegationAdmission, runs, childSessions, invocations })
+      registerToolAliases({ editor, ctx, config, native, nativeSkill, admission: delegationAdmission, runs, childSessions, invocations, resolveLogicalParent: options.resolveLogicalParent })
     })
     eventLoop = (async () => {
       try {
@@ -724,6 +745,7 @@ export async function registerV2Delegation(
   }
 
   return {
+    admission: delegationAdmission.background,
     runs,
     childSessions,
     cleanup: async () => {
