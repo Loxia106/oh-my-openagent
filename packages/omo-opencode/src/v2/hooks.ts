@@ -17,6 +17,7 @@ import { registerV2ClaudeHooks } from "./claude-hooks"
 import { registerV2RuntimeFallback } from "./runtime-fallback"
 import type { VerifiedLogicalParentResolver } from "./background-admission"
 import { registerV2UltraworkModelOverride } from "./ultrawork-model"
+import { registerV2UnstableAgentBabysitter } from "./unstable-agent-babysitter"
 import { registerV2CompactionModelOverride, registerV2CompactionOverflowGuard, registerV2PreemptiveCompaction, registerV2ToolOutputTruncator } from "./long-conversation"
 
 async function unwind(cleanups: Array<() => Promise<void>>): Promise<unknown[]> {
@@ -64,6 +65,7 @@ export async function registerV2Hooks(ctx: Plugin.Context, config: OhMyOpenCodeC
 				? undefined : claudeHooks.beforeContinuation,
 			onSessionDeleted: (sessionID) => backgroundToolPolicy.forget(sessionID),
 		}))
+		cleanups.push(await registerV2UnstableAgentBabysitter(ctx, config, { resolveLogicalParent: options.resolveLogicalParent }))
 		// Runs after the Claude PreCompact and OMO compaction-context hooks have extended the request.
 		cleanups.push(await registerV2CompactionOverflowGuard(ctx, config))
 		cleanups.push(await registerV2CompactionModelOverride(ctx, config))
