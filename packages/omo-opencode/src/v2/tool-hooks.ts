@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises"
+import { resolve as resolvePath } from "node:path"
 import type { Plugin } from "@opencode/plugin"
 import { Error as ToolError, type Result as NativeToolResult } from "@opencode/plugin/promise/tool"
 import type { ShellCreateBefore } from "@opencode/plugin/promise/shell"
@@ -10,6 +12,7 @@ import { isCanonicallyAllowedMarkdown } from "./path-policy"
 
 const PROMETHEUS_AGENT = "prometheus"
 const READ_TOOL = "read"
+const WRITE_SUCCESS_MARKER = "File written successfully."
 const READ_LINE = /^\s*(\d+): ?(.*)$/
 const TRUNCATED_LINE_SUFFIX = "... (line truncated to 2000 chars)"
 
@@ -161,9 +164,26 @@ export async function registerV2ToolHooks(ctx: Plugin.Context, config: OhMyOpenC
 		}
 
 		if (config.hashline_edit === true && !disabled.has("hashline-read-enhancer")) {
-			const readEnhancer = await ctx.tool.hook("execute.after", (event) => {
-				if (event.status !== "completed" || event.tool.toLowerCase() !== READ_TOOL) return
-				event.result = enhanceReadResult(event.result) as typeof event.result
+			const readEnhancer = await ctx.tool.hook("execute.after", async (event) => {
+				if (event.status !== "completed") return
+				const tool = event.tool.toLowerCase()
+				if (tool === READ_TOOL) {
+					event.result = enhanceReadResult(event.result) as typeof event.result
+					return
+				}
+				// Legacy hashline write summary: report the written line count so hash anchors are re-read.
+				if (tool === "write" && isRecord(event.input)) {
+					const path = typeof event.input.filePath === "string" ? event.input.filePath : typeof event.input.path === "string" ? event.input.path : undefined
+					if (!path) return
+					try {
+						const absolute = resolvePath(String(ctx.location.directory), path)
+						const content = await readFile(absolute, "utf8")
+						const lineCount = content === "" ? 0 : content.split("\n").length
+						event.result = { ...event.result, content: [{ type: "text", text: `${WRITE_SUCCESS_MARKER} ${lineCount} lines written.` }] } as typeof event.result
+					} catch {
+						// Keep the native write result when the file cannot be re-read.
+					}
+				}
 			})
 			cleanups.push(() => readEnhancer.dispose())
 		}

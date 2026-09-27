@@ -119,6 +119,11 @@ describe("native v2 tool hooks", () => {
 		await callback?.(original)
 		expect(original.result.extra).toBe("kept")
 		expect(original.result.content[0]?.text).toBe(`Read file /tmp/sample.txt, lines 1-1\n1#${computeLineHash(1, "alpha")}|alpha`)
+		await writeFile(join(directory, "written.txt"), "one\ntwo\nthree")
+		const written = { status: "completed", tool: "write", input: { filePath: "written.txt", content: "x" }, result: { content: [{ type: "text", text: "Wrote file" }], metadata: { kept: true } } }
+		await callback?.(written)
+		expect(written.result.content).toEqual([{ type: "text", text: "File written successfully. 3 lines written." }])
+		expect(written.result.metadata).toEqual({ kept: true })
 		await cleanup()
 	})
 

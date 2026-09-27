@@ -71,6 +71,13 @@ const hashlineInput = z.object({
   rename: z.string().optional(),
 })
 
+const hashlineEditCompatInput = hashlineInput.extend({
+  edits: hashlineInput.shape.edits.optional(),
+  oldString: z.string().optional().describe("Exact text to replace (plain string replacement mode)"),
+  newString: z.string().optional().describe("Replacement text (plain string replacement mode)"),
+  replaceAll: z.boolean().optional(),
+})
+
 function record(value: unknown): StringRecord | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as StringRecord
@@ -335,6 +342,23 @@ export function addV2FilesystemTools(editor: ToolEditor, ctx: Plugin.Context, co
     input: hashlineInput,
     options: { codemode: false, permission: "edit" },
     execute: async (args, context) => executeHashlineEdit(args, context, read, edit, write, nativePatch),
+  })
+  // Legacy hashline mode replaced `edit` itself, and agent prompts tell the model to call Edit with LINE#ID
+  // anchors. The captured native edit/write/patch executors still apply the change and its permission.
+  // String replacement stays available for callers that still pass oldString/newString.
+  editor.remove("edit")
+  addV2Tool(editor, {
+    name: "edit",
+    description: `${HASHLINE_EDIT_DESCRIPTION}\n\nFor a plain string replacement, pass filePath with oldString/newString instead of edits.`,
+    input: hashlineEditCompatInput,
+    options: { codemode: false, permission: "edit" },
+    execute: async (args, context) => {
+      if (args.oldString !== undefined) {
+        if (args.newString === undefined) throw new ToolError({ message: "edit with oldString also requires newString." })
+        return edit.execute({ path: args.filePath, oldString: args.oldString, newString: args.newString, ...(args.replaceAll === undefined ? {} : { replaceAll: args.replaceAll }) }, context)
+      }
+      return executeHashlineEdit({ ...args, edits: args.edits ?? [] }, context, read, edit, write, nativePatch)
+    },
   })
 }
 
