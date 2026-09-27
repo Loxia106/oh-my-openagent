@@ -7,6 +7,7 @@ import type { BackgroundTaskConfig } from "../config/schema"
 import {
 	createV2BackgroundAdmission,
 	resolveBackgroundAdmissionPool,
+	type BackgroundAdmissionClock,
 	type AdmissionEvent,
 	type AdmissionModel,
 } from "./background-admission"
@@ -38,7 +39,9 @@ function harness(options: {
 	storageValues?: Map<string, unknown>
 	seed?: Record<string, FakeSession>
 	setFailure?: () => Error | undefined
+	beforeSet?: (key: string, value: unknown) => Promise<void> | void
 	removeFailure?: () => Error | undefined
+	clock?: BackgroundAdmissionClock
 	wait?: (sessionID: string, signal?: AbortSignal) => Promise<void>
 	get?: (sessionID: string, sessions: Map<string, FakeSession>) => Promise<FakeSession>
 } = {}) {
@@ -61,6 +64,7 @@ function harness(options: {
 		set: async (key: string, value: unknown) => {
 			const failure = options.setFailure?.()
 			if (failure) throw failure
+			await options.beforeSet?.(key, value)
 			values.set(key, structuredClone(value))
 		},
 		remove: async (key: string) => {
@@ -94,8 +98,54 @@ function harness(options: {
 	return {
 		values,
 		sessions,
-		create: (config = options.config) => createV2BackgroundAdmission(ctx, config),
+		create: (config = options.config) => createV2BackgroundAdmission(ctx, config, options.clock),
 	}
+}
+
+function fakeClock(startAt = 0) {
+	let now = startAt
+	let nextID = 0
+	const timers = new Map<{ id: number }, { dueAt: number; callback: () => void }>()
+	const scheduledDelays: number[] = []
+	const clock: BackgroundAdmissionClock = {
+		now: () => now,
+		setTimeout(callback, delayMs) {
+			const id = { id: ++nextID }
+			timers.set(id, { dueAt: now + delayMs, callback })
+			scheduledDelays.push(delayMs)
+			return id
+		},
+		clearTimeout(timer) {
+			timers.delete(timer as { id: number })
+		},
+	}
+	return {
+		clock,
+		scheduledDelays,
+		get activeTimerCount() { return timers.size },
+		async advanceBy(milliseconds: number) {
+			now += milliseconds
+			while (true) {
+				const due = [...timers.entries()]
+					.filter(([, timer]) => timer.dueAt <= now)
+					.sort((a, b) => a[1].dueAt - b[1].dueAt || a[0].id - b[0].id)
+				if (due.length === 0) break
+				for (const [id, timer] of due) {
+					if (!timers.delete(id)) continue
+					timer.callback()
+					await Promise.resolve()
+				}
+			}
+			for (let turn = 0; turn < 8; turn++) await Promise.resolve()
+		},
+	}
+}
+
+function capture<T>(promise: Promise<T>) {
+	return promise.then(
+		(value) => ({ status: "resolved" as const, value }),
+		(error) => ({ status: "rejected" as const, error: error instanceof Error ? error : new Error(String(error)) }),
+	)
 }
 
 function executionEvent(type: string, sessionID: string, seq: number, id = "event-" + seq): AdmissionEvent {
@@ -145,6 +195,12 @@ function persistedLease(overrides: Record<string, unknown> = {}) {
 		adoptedUntrackedResume: false,
 		...overrides,
 	}
+}
+
+function deferred() {
+	let resolve!: () => void
+	const promise = new Promise<void>((done) => { resolve = done })
+	return { promise, resolve }
 }
 
 describe("native V2 background admission", () => {
@@ -688,6 +744,31 @@ describe("native V2 background admission", () => {
 		await manager.dispose()
 	})
 
+	test("disposal closes acquisition before a delayed activity flush and keeps the running child reserved", async () => {
+		const entered = deferred()
+		const release = deferred()
+		let shouldBlock = false
+		const h = harness({
+			config: { defaultConcurrency: 1 } as BackgroundTaskConfig,
+			beforeSet: async (key) => {
+				if (!shouldBlock || !key.includes("background-activity")) return
+				shouldBlock = false
+			entered.resolve()
+			await release.promise
+			},
+		})
+		const manager = h.create()
+		const running = await bindNew(manager, h.sessions, "ses-dispose-held-child")
+		shouldBlock = true
+		const disposing = manager.dispose()
+		await entered.promise
+		await expect(manager.acquire({ parentSessionID: rootID, model: chosenModel, mode: "new" })).rejects.toThrow("disposed")
+		await expect(running.beginCreate()).rejects.toThrow("disposed")
+		release.resolve()
+		await disposing
+		expect((await manager.diagnostics()).activeLeases.some((lease) => lease.leaseID === running.leaseID && lease.childSessionID === "ses-dispose-held-child")).toBe(true)
+	})
+
 	test("queued waiters abort or reject on disposal without releasing active children", async () => {
 		const h = harness({ config: { defaultConcurrency: 1 } as BackgroundTaskConfig })
 		const manager = h.create()
@@ -702,5 +783,178 @@ describe("native V2 background admission", () => {
 		await waitFor(async () => (await manager.diagnostics()).queuedWaiters["model:provider/family/model/with/slash"] === 1)
 		await manager.dispose()
 		await expect(pending).rejects.toThrow("disposed")
+	})
+
+	test("queue TTL defaults to 30 minutes and dispose clears its timer", async () => {
+		const timers = fakeClock()
+		const h = harness({ config: { defaultConcurrency: 1 } as BackgroundTaskConfig, clock: timers.clock })
+		const manager = h.create()
+		await bindNew(manager, h.sessions, "ses-ttl-default-active")
+		const pending = capture(manager.acquire({ parentSessionID: rootID, model: chosenModel, mode: "new" }))
+		await waitFor(async () => (await manager.diagnostics()).queuedWaiters["model:provider/family/model/with/slash"] === 1)
+		expect(timers.scheduledDelays).toEqual([30 * 60 * 1000])
+		expect(timers.activeTimerCount).toBe(1)
+		await manager.dispose()
+		expect((await pending).status).toBe("rejected")
+		expect(timers.activeTimerCount).toBe(0)
+		expect((await manager.diagnostics()).activeLeases.map((lease) => lease.childSessionID)).toContain("ses-ttl-default-active")
+	})
+
+	test("expires FIFO waiters from their enqueue times and admits the next live waiter", async () => {
+		const timers = fakeClock()
+		const ttl = 300_000
+		const h = harness({
+			config: { defaultConcurrency: 1, taskTtlMs: ttl } as BackgroundTaskConfig,
+			clock: timers.clock,
+		})
+		const manager = h.create()
+		const active = await bindNew(manager, h.sessions, "ses-ttl-fifo-active")
+		const first = capture(manager.acquire({ parentSessionID: rootID, model: chosenModel, mode: "new" }))
+		await waitFor(async () => (await manager.diagnostics()).queuedWaiters["model:provider/family/model/with/slash"] === 1)
+		await timers.advanceBy(100_000)
+		const second = capture(manager.acquire({ parentSessionID: rootID, model: chosenModel, mode: "new" }))
+		await waitFor(async () => (await manager.diagnostics()).queuedWaiters["model:provider/family/model/with/slash"] === 2)
+		expect(timers.scheduledDelays).toEqual([ttl, ttl])
+
+		await timers.advanceBy(ttl - 100_000)
+		const expired = await first
+		expect(expired.status).toBe("rejected")
+		if (expired.status !== "rejected") throw new Error("first queued admission should expire")
+		expect(expired.error.message).toContain("Background admission queue expired")
+		expect((await manager.diagnostics()).queuedWaiters["model:provider/family/model/with/slash"]).toBe(1)
+		expect((await manager.diagnostics()).activeLeases.some((lease) => lease.leaseID === active.leaseID && lease.childSessionID === "ses-ttl-fifo-active")).toBe(true)
+		expect([...h.values.values()].filter((value) => (value as { status?: string }).status === "queued")).toHaveLength(1)
+
+		await finish(manager, "ses-ttl-fifo-active", 1)
+		const admitted = await second
+		expect(admitted.status).toBe("resolved")
+		if (admitted.status !== "resolved") throw admitted.error
+		expect(timers.activeTimerCount).toBe(0)
+		await admitted.value.rollback()
+		await manager.dispose()
+	})
+
+	test("abort wins before queue TTL and clears its timer", async () => {
+		const timers = fakeClock()
+		const ttl = 300_000
+		const h = harness({
+			config: { defaultConcurrency: 1, taskTtlMs: ttl } as BackgroundTaskConfig,
+			clock: timers.clock,
+		})
+		const manager = h.create()
+		await bindNew(manager, h.sessions, "ses-ttl-abort-active")
+		const controller = new AbortController()
+		const pending = capture(manager.acquire({ parentSessionID: rootID, model: chosenModel, mode: "new", signal: controller.signal }))
+		await waitFor(async () => (await manager.diagnostics()).queuedWaiters["model:provider/family/model/with/slash"] === 1)
+		await timers.advanceBy(ttl - 1)
+		controller.abort()
+		const result = await pending
+		expect(result.status).toBe("rejected")
+		if (result.status !== "rejected") throw new Error("aborted admission should reject")
+		expect(result.error.message).toContain("cancelled")
+		expect(timers.activeTimerCount).toBe(0)
+		await timers.advanceBy(1)
+		expect(timers.activeTimerCount).toBe(0)
+		expect((await manager.diagnostics()).activeLeases.map((lease) => lease.childSessionID)).toContain("ses-ttl-abort-active")
+		await manager.dispose()
+	})
+
+	test("expiry wins an exact-deadline abort race once it enters the serializer", async () => {
+		const timers = fakeClock()
+		const ttl = 300_000
+		const h = harness({
+			config: { defaultConcurrency: 1, taskTtlMs: ttl } as BackgroundTaskConfig,
+			clock: timers.clock,
+		})
+		const manager = h.create()
+		await bindNew(manager, h.sessions, "ses-ttl-deadline-active")
+		const controller = new AbortController()
+		const pending = capture(manager.acquire({ parentSessionID: rootID, model: chosenModel, mode: "new", signal: controller.signal }))
+		await waitFor(async () => (await manager.diagnostics()).queuedWaiters["model:provider/family/model/with/slash"] === 1)
+		await timers.advanceBy(ttl)
+		controller.abort()
+		const result = await pending
+		expect(result.status).toBe("rejected")
+		if (result.status !== "rejected") throw new Error("expired admission should reject")
+		expect(result.error.message).toContain("Background admission queue expired")
+		expect(timers.activeTimerCount).toBe(0)
+		expect((await manager.diagnostics()).activeLeases.map((lease) => lease.childSessionID)).toContain("ses-ttl-deadline-active")
+		await manager.dispose()
+	})
+
+	test("long TTL values are timer-clamped and do not expire early", async () => {
+		const timers = fakeClock()
+		const ttl = 2_147_483_647 + 1000
+		const h = harness({
+			config: { defaultConcurrency: 1, taskTtlMs: ttl } as BackgroundTaskConfig,
+			clock: timers.clock,
+		})
+		const manager = h.create()
+		await bindNew(manager, h.sessions, "ses-ttl-long-active")
+		const pending = capture(manager.acquire({ parentSessionID: rootID, model: chosenModel, mode: "new" }))
+		await waitFor(async () => (await manager.diagnostics()).queuedWaiters["model:provider/family/model/with/slash"] === 1)
+		expect(timers.scheduledDelays).toEqual([2_147_483_647])
+		await timers.advanceBy(2_147_483_647)
+		expect((await manager.diagnostics()).queuedWaiters["model:provider/family/model/with/slash"]).toBe(1)
+		expect(timers.scheduledDelays).toEqual([2_147_483_647, 1000])
+		expect(timers.activeTimerCount).toBe(1)
+		await timers.advanceBy(1000)
+		const result = await pending
+		expect(result.status).toBe("rejected")
+		if (result.status !== "rejected") throw new Error("long-TTL admission should eventually expire")
+		expect(result.error.message).toContain("Background admission queue expired")
+		expect(timers.activeTimerCount).toBe(0)
+		await manager.dispose()
+	})
+
+	test("a grant immediately before expiry clears the timer and preserves its reservation", async () => {
+		const timers = fakeClock()
+		const ttl = 300_000
+		const h = harness({
+			config: { defaultConcurrency: 1, taskTtlMs: ttl } as BackgroundTaskConfig,
+			clock: timers.clock,
+		})
+		const manager = h.create()
+		await bindNew(manager, h.sessions, "ses-ttl-grant-active")
+		const pending = capture(manager.acquire({ parentSessionID: rootID, model: chosenModel, mode: "new" }))
+		await waitFor(async () => (await manager.diagnostics()).queuedWaiters["model:provider/family/model/with/slash"] === 1)
+		await timers.advanceBy(ttl - 1)
+		await finish(manager, "ses-ttl-grant-active", 1)
+		const result = await pending
+		expect(result.status).toBe("resolved")
+		if (result.status !== "resolved") throw result.error
+		expect(timers.activeTimerCount).toBe(0)
+		await timers.advanceBy(1)
+		expect((await manager.diagnostics()).activeLeases.find((lease) => lease.leaseID === result.value.leaseID)?.status).toBe("reserved")
+		await result.value.beginCreate()
+		h.sessions.set("ses-ttl-granted-child", info("ses-ttl-granted-child", { parentID: rootID }))
+		await result.value.bind("ses-ttl-granted-child")
+		expect((await manager.diagnostics()).activeLeases.some((lease) => lease.childSessionID === "ses-ttl-granted-child")).toBe(true)
+		await manager.dispose()
+	})
+
+	test("queue storage-removal failure stays fail-closed without touching the running child", async () => {
+		const timers = fakeClock()
+		const ttl = 300_000
+		let failRemove = false
+		const h = harness({
+			config: { defaultConcurrency: 1, taskTtlMs: ttl } as BackgroundTaskConfig,
+			clock: timers.clock,
+			removeFailure: () => failRemove ? new Error("storage unavailable during queue expiry") : undefined,
+		})
+		const manager = h.create()
+		const active = await bindNew(manager, h.sessions, "ses-ttl-storage-active")
+		const pending = capture(manager.acquire({ parentSessionID: rootID, model: chosenModel, mode: "new" }))
+		await waitFor(async () => (await manager.diagnostics()).queuedWaiters["model:provider/family/model/with/slash"] === 1)
+		failRemove = true
+		await timers.advanceBy(ttl)
+		const result = await pending
+		expect(result.status).toBe("rejected")
+		if (result.status !== "rejected") throw new Error("failed queue cleanup should reject")
+		expect(result.error.message).toContain("storage unavailable during queue expiry")
+		expect((await manager.diagnostics()).unhealthy).toContain("storage unavailable during queue expiry")
+		expect((await manager.diagnostics()).activeLeases.some((lease) => lease.leaseID === active.leaseID && lease.childSessionID === "ses-ttl-storage-active")).toBe(true)
+		expect(timers.activeTimerCount).toBe(0)
+		await manager.dispose()
 	})
 })

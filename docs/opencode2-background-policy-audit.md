@@ -2,6 +2,8 @@
 
 **Scope:** read-only comparison at OMO `de667dd0e41cfa07be58da072606aa68068f8904` and official OpenCode `2.0.18` source `cd9a14a6b688d4021bee381dfd39d2cef9c0f862`. This is a recorded baseline source audit. It does not claim that the proposed policy implementation is present; consult the current compatibility matrix for accepted changes.
 
+The baseline gaps below predate the implemented admission quotas, tool-call limits, queue TTL, and generation-scoped activity monitor. The [current compatibility document](opencode2-compatibility.md#native-background-admission) records the supported policies and retained boundaries, including host-owned session deletion and unsupported foreground polling timeouts.
+
 ## Finding
 
 `BackgroundTaskConfigSchema` is still part of OMO's validated config, but a targeted search of `packages/omo-opencode/src/v2` found no references to `background_task` or any of its fields. The current V2 path therefore does not apply this policy.

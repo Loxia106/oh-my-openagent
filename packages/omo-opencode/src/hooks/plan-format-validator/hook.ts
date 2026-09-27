@@ -251,7 +251,7 @@ function isPlanFilePath(filePath: string): boolean {
  * malformed task labels. Warns the agent when some or all tasks
  * will be skipped by the progress counter.
  */
-export function createPlanFormatValidatorHook(_ctx: PluginInput) {
+export function createPlanFormatValidatorHook(_ctx: Pick<PluginInput, "directory">) {
   return {
     "tool.execute.after": async (
       input: { tool: string; sessionID: string; callID: string; args?: Record<string, unknown> },

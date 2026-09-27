@@ -2302,6 +2302,7 @@
               "refactor",
               "ulw-execute",
               "stop-continuation",
+              "handoff",
               "remove-ai-slops",
               "hyperplan"
             ]
@@ -2402,8 +2403,35 @@
                             "minimum": 0,
                             "maximum": 1
                           },
+                          "max_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "provider_options": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "maxTokens": {
                             "type": "number"
+                          },
+                          "providerOptions": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
+                          "textVerbosity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high"
+                            ]
                           },
                           "thinking": {
                             "type": "object",
@@ -2497,8 +2525,35 @@
                             "minimum": 0,
                             "maximum": 1
                           },
+                          "max_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "provider_options": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "maxTokens": {
                             "type": "number"
+                          },
+                          "providerOptions": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
+                          "textVerbosity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high"
+                            ]
                           },
                           "thinking": {
                             "type": "object",
@@ -2584,8 +2639,35 @@
                                 "minimum": 0,
                                 "maximum": 1
                               },
+                              "max_tokens": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "provider_options": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
                               "maxTokens": {
                                 "type": "number"
+                              },
+                              "providerOptions": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
+                              "textVerbosity": {
+                                "type": "string",
+                                "enum": [
+                                  "low",
+                                  "medium",
+                                  "high"
+                                ]
                               },
                               "thinking": {
                                 "type": "object",
@@ -2954,8 +3036,35 @@
                             "minimum": 0,
                             "maximum": 1
                           },
+                          "max_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "provider_options": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "maxTokens": {
                             "type": "number"
+                          },
+                          "providerOptions": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
+                          "textVerbosity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high"
+                            ]
                           },
                           "thinking": {
                             "type": "object",
@@ -3049,8 +3158,35 @@
                             "minimum": 0,
                             "maximum": 1
                           },
+                          "max_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "provider_options": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "maxTokens": {
                             "type": "number"
+                          },
+                          "providerOptions": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
+                          "textVerbosity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high"
+                            ]
                           },
                           "thinking": {
                             "type": "object",
@@ -3136,8 +3272,35 @@
                                 "minimum": 0,
                                 "maximum": 1
                               },
+                              "max_tokens": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "provider_options": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
                               "maxTokens": {
                                 "type": "number"
+                              },
+                              "providerOptions": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
+                              "textVerbosity": {
+                                "type": "string",
+                                "enum": [
+                                  "low",
+                                  "medium",
+                                  "high"
+                                ]
                               },
                               "thinking": {
                                 "type": "object",
@@ -3506,8 +3669,35 @@
                             "minimum": 0,
                             "maximum": 1
                           },
+                          "max_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "provider_options": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "maxTokens": {
                             "type": "number"
+                          },
+                          "providerOptions": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
+                          "textVerbosity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high"
+                            ]
                           },
                           "thinking": {
                             "type": "object",
@@ -3601,8 +3791,35 @@
                             "minimum": 0,
                             "maximum": 1
                           },
+                          "max_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "provider_options": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "maxTokens": {
                             "type": "number"
+                          },
+                          "providerOptions": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
+                          "textVerbosity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high"
+                            ]
                           },
                           "thinking": {
                             "type": "object",
@@ -3688,8 +3905,35 @@
                                 "minimum": 0,
                                 "maximum": 1
                               },
+                              "max_tokens": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "provider_options": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
                               "maxTokens": {
                                 "type": "number"
+                              },
+                              "providerOptions": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
+                              "textVerbosity": {
+                                "type": "string",
+                                "enum": [
+                                  "low",
+                                  "medium",
+                                  "high"
+                                ]
                               },
                               "thinking": {
                                 "type": "object",
@@ -4058,8 +4302,35 @@
                             "minimum": 0,
                             "maximum": 1
                           },
+                          "max_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "provider_options": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "maxTokens": {
                             "type": "number"
+                          },
+                          "providerOptions": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
+                          "textVerbosity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high"
+                            ]
                           },
                           "thinking": {
                             "type": "object",
@@ -4153,8 +4424,35 @@
                             "minimum": 0,
                             "maximum": 1
                           },
+                          "max_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "provider_options": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "maxTokens": {
                             "type": "number"
+                          },
+                          "providerOptions": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
+                          "textVerbosity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high"
+                            ]
                           },
                           "thinking": {
                             "type": "object",
@@ -4240,8 +4538,35 @@
                                 "minimum": 0,
                                 "maximum": 1
                               },
+                              "max_tokens": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "provider_options": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
                               "maxTokens": {
                                 "type": "number"
+                              },
+                              "providerOptions": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
+                              "textVerbosity": {
+                                "type": "string",
+                                "enum": [
+                                  "low",
+                                  "medium",
+                                  "high"
+                                ]
                               },
                               "thinking": {
                                 "type": "object",
@@ -4613,8 +4938,35 @@
                             "minimum": 0,
                             "maximum": 1
                           },
+                          "max_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "provider_options": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "maxTokens": {
                             "type": "number"
+                          },
+                          "providerOptions": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
+                          "textVerbosity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high"
+                            ]
                           },
                           "thinking": {
                             "type": "object",
@@ -4708,8 +5060,35 @@
                             "minimum": 0,
                             "maximum": 1
                           },
+                          "max_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "provider_options": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "maxTokens": {
                             "type": "number"
+                          },
+                          "providerOptions": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
+                          "textVerbosity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high"
+                            ]
                           },
                           "thinking": {
                             "type": "object",
@@ -4795,8 +5174,35 @@
                                 "minimum": 0,
                                 "maximum": 1
                               },
+                              "max_tokens": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "provider_options": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
                               "maxTokens": {
                                 "type": "number"
+                              },
+                              "providerOptions": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
+                              "textVerbosity": {
+                                "type": "string",
+                                "enum": [
+                                  "low",
+                                  "medium",
+                                  "high"
+                                ]
                               },
                               "thinking": {
                                 "type": "object",
@@ -5165,8 +5571,35 @@
                             "minimum": 0,
                             "maximum": 1
                           },
+                          "max_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "provider_options": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "maxTokens": {
                             "type": "number"
+                          },
+                          "providerOptions": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
+                          "textVerbosity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high"
+                            ]
                           },
                           "thinking": {
                             "type": "object",
@@ -5260,8 +5693,35 @@
                             "minimum": 0,
                             "maximum": 1
                           },
+                          "max_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "provider_options": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "maxTokens": {
                             "type": "number"
+                          },
+                          "providerOptions": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
+                          "textVerbosity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high"
+                            ]
                           },
                           "thinking": {
                             "type": "object",
@@ -5347,8 +5807,35 @@
                                 "minimum": 0,
                                 "maximum": 1
                               },
+                              "max_tokens": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "provider_options": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
                               "maxTokens": {
                                 "type": "number"
+                              },
+                              "providerOptions": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
+                              "textVerbosity": {
+                                "type": "string",
+                                "enum": [
+                                  "low",
+                                  "medium",
+                                  "high"
+                                ]
                               },
                               "thinking": {
                                 "type": "object",
@@ -5717,8 +6204,35 @@
                             "minimum": 0,
                             "maximum": 1
                           },
+                          "max_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "provider_options": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "maxTokens": {
                             "type": "number"
+                          },
+                          "providerOptions": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
+                          "textVerbosity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high"
+                            ]
                           },
                           "thinking": {
                             "type": "object",
@@ -5812,8 +6326,35 @@
                             "minimum": 0,
                             "maximum": 1
                           },
+                          "max_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "provider_options": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "maxTokens": {
                             "type": "number"
+                          },
+                          "providerOptions": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
+                          "textVerbosity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high"
+                            ]
                           },
                           "thinking": {
                             "type": "object",
@@ -5899,8 +6440,35 @@
                                 "minimum": 0,
                                 "maximum": 1
                               },
+                              "max_tokens": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "provider_options": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
                               "maxTokens": {
                                 "type": "number"
+                              },
+                              "providerOptions": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
+                              "textVerbosity": {
+                                "type": "string",
+                                "enum": [
+                                  "low",
+                                  "medium",
+                                  "high"
+                                ]
                               },
                               "thinking": {
                                 "type": "object",
@@ -6269,8 +6837,35 @@
                             "minimum": 0,
                             "maximum": 1
                           },
+                          "max_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "provider_options": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "maxTokens": {
                             "type": "number"
+                          },
+                          "providerOptions": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
+                          "textVerbosity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high"
+                            ]
                           },
                           "thinking": {
                             "type": "object",
@@ -6364,8 +6959,35 @@
                             "minimum": 0,
                             "maximum": 1
                           },
+                          "max_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "provider_options": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "maxTokens": {
                             "type": "number"
+                          },
+                          "providerOptions": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
+                          "textVerbosity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high"
+                            ]
                           },
                           "thinking": {
                             "type": "object",
@@ -6451,8 +7073,35 @@
                                 "minimum": 0,
                                 "maximum": 1
                               },
+                              "max_tokens": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "provider_options": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
                               "maxTokens": {
                                 "type": "number"
+                              },
+                              "providerOptions": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
+                              "textVerbosity": {
+                                "type": "string",
+                                "enum": [
+                                  "low",
+                                  "medium",
+                                  "high"
+                                ]
                               },
                               "thinking": {
                                 "type": "object",
@@ -6821,8 +7470,35 @@
                             "minimum": 0,
                             "maximum": 1
                           },
+                          "max_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "provider_options": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "maxTokens": {
                             "type": "number"
+                          },
+                          "providerOptions": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
+                          "textVerbosity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high"
+                            ]
                           },
                           "thinking": {
                             "type": "object",
@@ -6916,8 +7592,35 @@
                             "minimum": 0,
                             "maximum": 1
                           },
+                          "max_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "provider_options": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "maxTokens": {
                             "type": "number"
+                          },
+                          "providerOptions": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
+                          "textVerbosity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high"
+                            ]
                           },
                           "thinking": {
                             "type": "object",
@@ -7003,8 +7706,35 @@
                                 "minimum": 0,
                                 "maximum": 1
                               },
+                              "max_tokens": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "provider_options": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
                               "maxTokens": {
                                 "type": "number"
+                              },
+                              "providerOptions": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
+                              "textVerbosity": {
+                                "type": "string",
+                                "enum": [
+                                  "low",
+                                  "medium",
+                                  "high"
+                                ]
                               },
                               "thinking": {
                                 "type": "object",
@@ -7373,8 +8103,35 @@
                             "minimum": 0,
                             "maximum": 1
                           },
+                          "max_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "provider_options": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "maxTokens": {
                             "type": "number"
+                          },
+                          "providerOptions": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
+                          "textVerbosity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high"
+                            ]
                           },
                           "thinking": {
                             "type": "object",
@@ -7468,8 +8225,35 @@
                             "minimum": 0,
                             "maximum": 1
                           },
+                          "max_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "provider_options": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "maxTokens": {
                             "type": "number"
+                          },
+                          "providerOptions": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
+                          "textVerbosity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high"
+                            ]
                           },
                           "thinking": {
                             "type": "object",
@@ -7555,8 +8339,35 @@
                                 "minimum": 0,
                                 "maximum": 1
                               },
+                              "max_tokens": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "provider_options": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
                               "maxTokens": {
                                 "type": "number"
+                              },
+                              "providerOptions": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
+                              "textVerbosity": {
+                                "type": "string",
+                                "enum": [
+                                  "low",
+                                  "medium",
+                                  "high"
+                                ]
                               },
                               "thinking": {
                                 "type": "object",
@@ -7925,8 +8736,35 @@
                             "minimum": 0,
                             "maximum": 1
                           },
+                          "max_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "provider_options": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "maxTokens": {
                             "type": "number"
+                          },
+                          "providerOptions": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
+                          "textVerbosity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high"
+                            ]
                           },
                           "thinking": {
                             "type": "object",
@@ -8020,8 +8858,35 @@
                             "minimum": 0,
                             "maximum": 1
                           },
+                          "max_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "provider_options": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "maxTokens": {
                             "type": "number"
+                          },
+                          "providerOptions": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
+                          "textVerbosity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high"
+                            ]
                           },
                           "thinking": {
                             "type": "object",
@@ -8107,8 +8972,35 @@
                                 "minimum": 0,
                                 "maximum": 1
                               },
+                              "max_tokens": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "provider_options": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
                               "maxTokens": {
                                 "type": "number"
+                              },
+                              "providerOptions": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
+                              "textVerbosity": {
+                                "type": "string",
+                                "enum": [
+                                  "low",
+                                  "medium",
+                                  "high"
+                                ]
                               },
                               "thinking": {
                                 "type": "object",
@@ -8477,8 +9369,35 @@
                             "minimum": 0,
                             "maximum": 1
                           },
+                          "max_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "provider_options": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "maxTokens": {
                             "type": "number"
+                          },
+                          "providerOptions": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
+                          "textVerbosity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high"
+                            ]
                           },
                           "thinking": {
                             "type": "object",
@@ -8572,8 +9491,35 @@
                             "minimum": 0,
                             "maximum": 1
                           },
+                          "max_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "provider_options": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "maxTokens": {
                             "type": "number"
+                          },
+                          "providerOptions": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
+                          "textVerbosity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high"
+                            ]
                           },
                           "thinking": {
                             "type": "object",
@@ -8659,8 +9605,35 @@
                                 "minimum": 0,
                                 "maximum": 1
                               },
+                              "max_tokens": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "provider_options": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
                               "maxTokens": {
                                 "type": "number"
+                              },
+                              "providerOptions": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
+                              "textVerbosity": {
+                                "type": "string",
+                                "enum": [
+                                  "low",
+                                  "medium",
+                                  "high"
+                                ]
                               },
                               "thinking": {
                                 "type": "object",
@@ -9029,8 +10002,35 @@
                             "minimum": 0,
                             "maximum": 1
                           },
+                          "max_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "provider_options": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "maxTokens": {
                             "type": "number"
+                          },
+                          "providerOptions": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
+                          "textVerbosity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high"
+                            ]
                           },
                           "thinking": {
                             "type": "object",
@@ -9124,8 +10124,35 @@
                             "minimum": 0,
                             "maximum": 1
                           },
+                          "max_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "provider_options": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "maxTokens": {
                             "type": "number"
+                          },
+                          "providerOptions": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
+                          "textVerbosity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high"
+                            ]
                           },
                           "thinking": {
                             "type": "object",
@@ -9211,8 +10238,35 @@
                                 "minimum": 0,
                                 "maximum": 1
                               },
+                              "max_tokens": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "provider_options": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
                               "maxTokens": {
                                 "type": "number"
+                              },
+                              "providerOptions": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
+                              "textVerbosity": {
+                                "type": "string",
+                                "enum": [
+                                  "low",
+                                  "medium",
+                                  "high"
+                                ]
                               },
                               "thinking": {
                                 "type": "object",
@@ -9581,8 +10635,35 @@
                             "minimum": 0,
                             "maximum": 1
                           },
+                          "max_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "provider_options": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "maxTokens": {
                             "type": "number"
+                          },
+                          "providerOptions": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
+                          "textVerbosity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high"
+                            ]
                           },
                           "thinking": {
                             "type": "object",
@@ -9676,8 +10757,35 @@
                             "minimum": 0,
                             "maximum": 1
                           },
+                          "max_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "provider_options": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "maxTokens": {
                             "type": "number"
+                          },
+                          "providerOptions": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
+                          "textVerbosity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high"
+                            ]
                           },
                           "thinking": {
                             "type": "object",
@@ -9763,8 +10871,35 @@
                                 "minimum": 0,
                                 "maximum": 1
                               },
+                              "max_tokens": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "provider_options": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
                               "maxTokens": {
                                 "type": "number"
+                              },
+                              "providerOptions": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
+                              "textVerbosity": {
+                                "type": "string",
+                                "enum": [
+                                  "low",
+                                  "medium",
+                                  "high"
+                                ]
                               },
                               "thinking": {
                                 "type": "object",
@@ -10134,8 +11269,35 @@
                           "minimum": 0,
                           "maximum": 1
                         },
+                        "max_tokens": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "provider_options": {
+                          "type": "object",
+                          "propertyNames": {
+                            "type": "string"
+                          },
+                          "additionalProperties": {}
+                        },
                         "maxTokens": {
                           "type": "number"
+                        },
+                        "providerOptions": {
+                          "type": "object",
+                          "propertyNames": {
+                            "type": "string"
+                          },
+                          "additionalProperties": {}
+                        },
+                        "textVerbosity": {
+                          "type": "string",
+                          "enum": [
+                            "low",
+                            "medium",
+                            "high"
+                          ]
                         },
                         "thinking": {
                           "type": "object",
@@ -10229,8 +11391,35 @@
                           "minimum": 0,
                           "maximum": 1
                         },
+                        "max_tokens": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "provider_options": {
+                          "type": "object",
+                          "propertyNames": {
+                            "type": "string"
+                          },
+                          "additionalProperties": {}
+                        },
                         "maxTokens": {
                           "type": "number"
+                        },
+                        "providerOptions": {
+                          "type": "object",
+                          "propertyNames": {
+                            "type": "string"
+                          },
+                          "additionalProperties": {}
+                        },
+                        "textVerbosity": {
+                          "type": "string",
+                          "enum": [
+                            "low",
+                            "medium",
+                            "high"
+                          ]
                         },
                         "thinking": {
                           "type": "object",
@@ -10316,8 +11505,35 @@
                               "minimum": 0,
                               "maximum": 1
                             },
+                            "max_tokens": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "provider_options": {
+                              "type": "object",
+                              "propertyNames": {
+                                "type": "string"
+                              },
+                              "additionalProperties": {}
+                            },
                             "maxTokens": {
                               "type": "number"
+                            },
+                            "providerOptions": {
+                              "type": "object",
+                              "propertyNames": {
+                                "type": "string"
+                              },
+                              "additionalProperties": {}
+                            },
+                            "textVerbosity": {
+                              "type": "string",
+                              "enum": [
+                                "low",
+                                "medium",
+                                "high"
+                              ]
                             },
                             "thinking": {
                               "type": "object",
@@ -10695,8 +11911,35 @@
                           "minimum": 0,
                           "maximum": 1
                         },
+                        "max_tokens": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "provider_options": {
+                          "type": "object",
+                          "propertyNames": {
+                            "type": "string"
+                          },
+                          "additionalProperties": {}
+                        },
                         "maxTokens": {
                           "type": "number"
+                        },
+                        "providerOptions": {
+                          "type": "object",
+                          "propertyNames": {
+                            "type": "string"
+                          },
+                          "additionalProperties": {}
+                        },
+                        "textVerbosity": {
+                          "type": "string",
+                          "enum": [
+                            "low",
+                            "medium",
+                            "high"
+                          ]
                         },
                         "thinking": {
                           "type": "object",
@@ -10790,8 +12033,35 @@
                           "minimum": 0,
                           "maximum": 1
                         },
+                        "max_tokens": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "provider_options": {
+                          "type": "object",
+                          "propertyNames": {
+                            "type": "string"
+                          },
+                          "additionalProperties": {}
+                        },
                         "maxTokens": {
                           "type": "number"
+                        },
+                        "providerOptions": {
+                          "type": "object",
+                          "propertyNames": {
+                            "type": "string"
+                          },
+                          "additionalProperties": {}
+                        },
+                        "textVerbosity": {
+                          "type": "string",
+                          "enum": [
+                            "low",
+                            "medium",
+                            "high"
+                          ]
                         },
                         "thinking": {
                           "type": "object",
@@ -10877,8 +12147,35 @@
                               "minimum": 0,
                               "maximum": 1
                             },
+                            "max_tokens": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "provider_options": {
+                              "type": "object",
+                              "propertyNames": {
+                                "type": "string"
+                              },
+                              "additionalProperties": {}
+                            },
                             "maxTokens": {
                               "type": "number"
+                            },
+                            "providerOptions": {
+                              "type": "object",
+                              "propertyNames": {
+                                "type": "string"
+                              },
+                              "additionalProperties": {}
+                            },
+                            "textVerbosity": {
+                              "type": "string",
+                              "enum": [
+                                "low",
+                                "medium",
+                                "high"
+                              ]
                             },
                             "thinking": {
                               "type": "object",
@@ -19937,6 +21234,7 @@
                     "refactor",
                     "ulw-execute",
                     "stop-continuation",
+                    "handoff",
                     "remove-ai-slops",
                     "hyperplan"
                   ]
@@ -20037,8 +21335,35 @@
                                   "minimum": 0,
                                   "maximum": 1
                                 },
+                                "max_tokens": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "provider_options": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
                                 "maxTokens": {
                                   "type": "number"
+                                },
+                                "providerOptions": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
+                                "textVerbosity": {
+                                  "type": "string",
+                                  "enum": [
+                                    "low",
+                                    "medium",
+                                    "high"
+                                  ]
                                 },
                                 "thinking": {
                                   "type": "object",
@@ -20132,8 +21457,35 @@
                                   "minimum": 0,
                                   "maximum": 1
                                 },
+                                "max_tokens": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "provider_options": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
                                 "maxTokens": {
                                   "type": "number"
+                                },
+                                "providerOptions": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
+                                "textVerbosity": {
+                                  "type": "string",
+                                  "enum": [
+                                    "low",
+                                    "medium",
+                                    "high"
+                                  ]
                                 },
                                 "thinking": {
                                   "type": "object",
@@ -20219,8 +21571,35 @@
                                       "minimum": 0,
                                       "maximum": 1
                                     },
+                                    "max_tokens": {
+                                      "type": "integer",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "provider_options": {
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {}
+                                    },
                                     "maxTokens": {
                                       "type": "number"
+                                    },
+                                    "providerOptions": {
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {}
+                                    },
+                                    "textVerbosity": {
+                                      "type": "string",
+                                      "enum": [
+                                        "low",
+                                        "medium",
+                                        "high"
+                                      ]
                                     },
                                     "thinking": {
                                       "type": "object",
@@ -20589,8 +21968,35 @@
                                   "minimum": 0,
                                   "maximum": 1
                                 },
+                                "max_tokens": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "provider_options": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
                                 "maxTokens": {
                                   "type": "number"
+                                },
+                                "providerOptions": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
+                                "textVerbosity": {
+                                  "type": "string",
+                                  "enum": [
+                                    "low",
+                                    "medium",
+                                    "high"
+                                  ]
                                 },
                                 "thinking": {
                                   "type": "object",
@@ -20684,8 +22090,35 @@
                                   "minimum": 0,
                                   "maximum": 1
                                 },
+                                "max_tokens": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "provider_options": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
                                 "maxTokens": {
                                   "type": "number"
+                                },
+                                "providerOptions": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
+                                "textVerbosity": {
+                                  "type": "string",
+                                  "enum": [
+                                    "low",
+                                    "medium",
+                                    "high"
+                                  ]
                                 },
                                 "thinking": {
                                   "type": "object",
@@ -20771,8 +22204,35 @@
                                       "minimum": 0,
                                       "maximum": 1
                                     },
+                                    "max_tokens": {
+                                      "type": "integer",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "provider_options": {
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {}
+                                    },
                                     "maxTokens": {
                                       "type": "number"
+                                    },
+                                    "providerOptions": {
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {}
+                                    },
+                                    "textVerbosity": {
+                                      "type": "string",
+                                      "enum": [
+                                        "low",
+                                        "medium",
+                                        "high"
+                                      ]
                                     },
                                     "thinking": {
                                       "type": "object",
@@ -21141,8 +22601,35 @@
                                   "minimum": 0,
                                   "maximum": 1
                                 },
+                                "max_tokens": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "provider_options": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
                                 "maxTokens": {
                                   "type": "number"
+                                },
+                                "providerOptions": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
+                                "textVerbosity": {
+                                  "type": "string",
+                                  "enum": [
+                                    "low",
+                                    "medium",
+                                    "high"
+                                  ]
                                 },
                                 "thinking": {
                                   "type": "object",
@@ -21236,8 +22723,35 @@
                                   "minimum": 0,
                                   "maximum": 1
                                 },
+                                "max_tokens": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "provider_options": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
                                 "maxTokens": {
                                   "type": "number"
+                                },
+                                "providerOptions": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
+                                "textVerbosity": {
+                                  "type": "string",
+                                  "enum": [
+                                    "low",
+                                    "medium",
+                                    "high"
+                                  ]
                                 },
                                 "thinking": {
                                   "type": "object",
@@ -21323,8 +22837,35 @@
                                       "minimum": 0,
                                       "maximum": 1
                                     },
+                                    "max_tokens": {
+                                      "type": "integer",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "provider_options": {
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {}
+                                    },
                                     "maxTokens": {
                                       "type": "number"
+                                    },
+                                    "providerOptions": {
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {}
+                                    },
+                                    "textVerbosity": {
+                                      "type": "string",
+                                      "enum": [
+                                        "low",
+                                        "medium",
+                                        "high"
+                                      ]
                                     },
                                     "thinking": {
                                       "type": "object",
@@ -21693,8 +23234,35 @@
                                   "minimum": 0,
                                   "maximum": 1
                                 },
+                                "max_tokens": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "provider_options": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
                                 "maxTokens": {
                                   "type": "number"
+                                },
+                                "providerOptions": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
+                                "textVerbosity": {
+                                  "type": "string",
+                                  "enum": [
+                                    "low",
+                                    "medium",
+                                    "high"
+                                  ]
                                 },
                                 "thinking": {
                                   "type": "object",
@@ -21788,8 +23356,35 @@
                                   "minimum": 0,
                                   "maximum": 1
                                 },
+                                "max_tokens": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "provider_options": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
                                 "maxTokens": {
                                   "type": "number"
+                                },
+                                "providerOptions": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
+                                "textVerbosity": {
+                                  "type": "string",
+                                  "enum": [
+                                    "low",
+                                    "medium",
+                                    "high"
+                                  ]
                                 },
                                 "thinking": {
                                   "type": "object",
@@ -21875,8 +23470,35 @@
                                       "minimum": 0,
                                       "maximum": 1
                                     },
+                                    "max_tokens": {
+                                      "type": "integer",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "provider_options": {
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {}
+                                    },
                                     "maxTokens": {
                                       "type": "number"
+                                    },
+                                    "providerOptions": {
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {}
+                                    },
+                                    "textVerbosity": {
+                                      "type": "string",
+                                      "enum": [
+                                        "low",
+                                        "medium",
+                                        "high"
+                                      ]
                                     },
                                     "thinking": {
                                       "type": "object",
@@ -22248,8 +23870,35 @@
                                   "minimum": 0,
                                   "maximum": 1
                                 },
+                                "max_tokens": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "provider_options": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
                                 "maxTokens": {
                                   "type": "number"
+                                },
+                                "providerOptions": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
+                                "textVerbosity": {
+                                  "type": "string",
+                                  "enum": [
+                                    "low",
+                                    "medium",
+                                    "high"
+                                  ]
                                 },
                                 "thinking": {
                                   "type": "object",
@@ -22343,8 +23992,35 @@
                                   "minimum": 0,
                                   "maximum": 1
                                 },
+                                "max_tokens": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "provider_options": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
                                 "maxTokens": {
                                   "type": "number"
+                                },
+                                "providerOptions": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
+                                "textVerbosity": {
+                                  "type": "string",
+                                  "enum": [
+                                    "low",
+                                    "medium",
+                                    "high"
+                                  ]
                                 },
                                 "thinking": {
                                   "type": "object",
@@ -22430,8 +24106,35 @@
                                       "minimum": 0,
                                       "maximum": 1
                                     },
+                                    "max_tokens": {
+                                      "type": "integer",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "provider_options": {
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {}
+                                    },
                                     "maxTokens": {
                                       "type": "number"
+                                    },
+                                    "providerOptions": {
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {}
+                                    },
+                                    "textVerbosity": {
+                                      "type": "string",
+                                      "enum": [
+                                        "low",
+                                        "medium",
+                                        "high"
+                                      ]
                                     },
                                     "thinking": {
                                       "type": "object",
@@ -22800,8 +24503,35 @@
                                   "minimum": 0,
                                   "maximum": 1
                                 },
+                                "max_tokens": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "provider_options": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
                                 "maxTokens": {
                                   "type": "number"
+                                },
+                                "providerOptions": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
+                                "textVerbosity": {
+                                  "type": "string",
+                                  "enum": [
+                                    "low",
+                                    "medium",
+                                    "high"
+                                  ]
                                 },
                                 "thinking": {
                                   "type": "object",
@@ -22895,8 +24625,35 @@
                                   "minimum": 0,
                                   "maximum": 1
                                 },
+                                "max_tokens": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "provider_options": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
                                 "maxTokens": {
                                   "type": "number"
+                                },
+                                "providerOptions": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
+                                "textVerbosity": {
+                                  "type": "string",
+                                  "enum": [
+                                    "low",
+                                    "medium",
+                                    "high"
+                                  ]
                                 },
                                 "thinking": {
                                   "type": "object",
@@ -22982,8 +24739,35 @@
                                       "minimum": 0,
                                       "maximum": 1
                                     },
+                                    "max_tokens": {
+                                      "type": "integer",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "provider_options": {
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {}
+                                    },
                                     "maxTokens": {
                                       "type": "number"
+                                    },
+                                    "providerOptions": {
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {}
+                                    },
+                                    "textVerbosity": {
+                                      "type": "string",
+                                      "enum": [
+                                        "low",
+                                        "medium",
+                                        "high"
+                                      ]
                                     },
                                     "thinking": {
                                       "type": "object",
@@ -23352,8 +25136,35 @@
                                   "minimum": 0,
                                   "maximum": 1
                                 },
+                                "max_tokens": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "provider_options": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
                                 "maxTokens": {
                                   "type": "number"
+                                },
+                                "providerOptions": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
+                                "textVerbosity": {
+                                  "type": "string",
+                                  "enum": [
+                                    "low",
+                                    "medium",
+                                    "high"
+                                  ]
                                 },
                                 "thinking": {
                                   "type": "object",
@@ -23447,8 +25258,35 @@
                                   "minimum": 0,
                                   "maximum": 1
                                 },
+                                "max_tokens": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "provider_options": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
                                 "maxTokens": {
                                   "type": "number"
+                                },
+                                "providerOptions": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
+                                "textVerbosity": {
+                                  "type": "string",
+                                  "enum": [
+                                    "low",
+                                    "medium",
+                                    "high"
+                                  ]
                                 },
                                 "thinking": {
                                   "type": "object",
@@ -23534,8 +25372,35 @@
                                       "minimum": 0,
                                       "maximum": 1
                                     },
+                                    "max_tokens": {
+                                      "type": "integer",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "provider_options": {
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {}
+                                    },
                                     "maxTokens": {
                                       "type": "number"
+                                    },
+                                    "providerOptions": {
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {}
+                                    },
+                                    "textVerbosity": {
+                                      "type": "string",
+                                      "enum": [
+                                        "low",
+                                        "medium",
+                                        "high"
+                                      ]
                                     },
                                     "thinking": {
                                       "type": "object",
@@ -23904,8 +25769,35 @@
                                   "minimum": 0,
                                   "maximum": 1
                                 },
+                                "max_tokens": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "provider_options": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
                                 "maxTokens": {
                                   "type": "number"
+                                },
+                                "providerOptions": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
+                                "textVerbosity": {
+                                  "type": "string",
+                                  "enum": [
+                                    "low",
+                                    "medium",
+                                    "high"
+                                  ]
                                 },
                                 "thinking": {
                                   "type": "object",
@@ -23999,8 +25891,35 @@
                                   "minimum": 0,
                                   "maximum": 1
                                 },
+                                "max_tokens": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "provider_options": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
                                 "maxTokens": {
                                   "type": "number"
+                                },
+                                "providerOptions": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
+                                "textVerbosity": {
+                                  "type": "string",
+                                  "enum": [
+                                    "low",
+                                    "medium",
+                                    "high"
+                                  ]
                                 },
                                 "thinking": {
                                   "type": "object",
@@ -24086,8 +26005,35 @@
                                       "minimum": 0,
                                       "maximum": 1
                                     },
+                                    "max_tokens": {
+                                      "type": "integer",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "provider_options": {
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {}
+                                    },
                                     "maxTokens": {
                                       "type": "number"
+                                    },
+                                    "providerOptions": {
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {}
+                                    },
+                                    "textVerbosity": {
+                                      "type": "string",
+                                      "enum": [
+                                        "low",
+                                        "medium",
+                                        "high"
+                                      ]
                                     },
                                     "thinking": {
                                       "type": "object",
@@ -24456,8 +26402,35 @@
                                   "minimum": 0,
                                   "maximum": 1
                                 },
+                                "max_tokens": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "provider_options": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
                                 "maxTokens": {
                                   "type": "number"
+                                },
+                                "providerOptions": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
+                                "textVerbosity": {
+                                  "type": "string",
+                                  "enum": [
+                                    "low",
+                                    "medium",
+                                    "high"
+                                  ]
                                 },
                                 "thinking": {
                                   "type": "object",
@@ -24551,8 +26524,35 @@
                                   "minimum": 0,
                                   "maximum": 1
                                 },
+                                "max_tokens": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "provider_options": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
                                 "maxTokens": {
                                   "type": "number"
+                                },
+                                "providerOptions": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
+                                "textVerbosity": {
+                                  "type": "string",
+                                  "enum": [
+                                    "low",
+                                    "medium",
+                                    "high"
+                                  ]
                                 },
                                 "thinking": {
                                   "type": "object",
@@ -24638,8 +26638,35 @@
                                       "minimum": 0,
                                       "maximum": 1
                                     },
+                                    "max_tokens": {
+                                      "type": "integer",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "provider_options": {
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {}
+                                    },
                                     "maxTokens": {
                                       "type": "number"
+                                    },
+                                    "providerOptions": {
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {}
+                                    },
+                                    "textVerbosity": {
+                                      "type": "string",
+                                      "enum": [
+                                        "low",
+                                        "medium",
+                                        "high"
+                                      ]
                                     },
                                     "thinking": {
                                       "type": "object",
@@ -25008,8 +27035,35 @@
                                   "minimum": 0,
                                   "maximum": 1
                                 },
+                                "max_tokens": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "provider_options": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
                                 "maxTokens": {
                                   "type": "number"
+                                },
+                                "providerOptions": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
+                                "textVerbosity": {
+                                  "type": "string",
+                                  "enum": [
+                                    "low",
+                                    "medium",
+                                    "high"
+                                  ]
                                 },
                                 "thinking": {
                                   "type": "object",
@@ -25103,8 +27157,35 @@
                                   "minimum": 0,
                                   "maximum": 1
                                 },
+                                "max_tokens": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "provider_options": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
                                 "maxTokens": {
                                   "type": "number"
+                                },
+                                "providerOptions": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
+                                "textVerbosity": {
+                                  "type": "string",
+                                  "enum": [
+                                    "low",
+                                    "medium",
+                                    "high"
+                                  ]
                                 },
                                 "thinking": {
                                   "type": "object",
@@ -25190,8 +27271,35 @@
                                       "minimum": 0,
                                       "maximum": 1
                                     },
+                                    "max_tokens": {
+                                      "type": "integer",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "provider_options": {
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {}
+                                    },
                                     "maxTokens": {
                                       "type": "number"
+                                    },
+                                    "providerOptions": {
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {}
+                                    },
+                                    "textVerbosity": {
+                                      "type": "string",
+                                      "enum": [
+                                        "low",
+                                        "medium",
+                                        "high"
+                                      ]
                                     },
                                     "thinking": {
                                       "type": "object",
@@ -25560,8 +27668,35 @@
                                   "minimum": 0,
                                   "maximum": 1
                                 },
+                                "max_tokens": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "provider_options": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
                                 "maxTokens": {
                                   "type": "number"
+                                },
+                                "providerOptions": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
+                                "textVerbosity": {
+                                  "type": "string",
+                                  "enum": [
+                                    "low",
+                                    "medium",
+                                    "high"
+                                  ]
                                 },
                                 "thinking": {
                                   "type": "object",
@@ -25655,8 +27790,35 @@
                                   "minimum": 0,
                                   "maximum": 1
                                 },
+                                "max_tokens": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "provider_options": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
                                 "maxTokens": {
                                   "type": "number"
+                                },
+                                "providerOptions": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
+                                "textVerbosity": {
+                                  "type": "string",
+                                  "enum": [
+                                    "low",
+                                    "medium",
+                                    "high"
+                                  ]
                                 },
                                 "thinking": {
                                   "type": "object",
@@ -25742,8 +27904,35 @@
                                       "minimum": 0,
                                       "maximum": 1
                                     },
+                                    "max_tokens": {
+                                      "type": "integer",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "provider_options": {
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {}
+                                    },
                                     "maxTokens": {
                                       "type": "number"
+                                    },
+                                    "providerOptions": {
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {}
+                                    },
+                                    "textVerbosity": {
+                                      "type": "string",
+                                      "enum": [
+                                        "low",
+                                        "medium",
+                                        "high"
+                                      ]
                                     },
                                     "thinking": {
                                       "type": "object",
@@ -26112,8 +28301,35 @@
                                   "minimum": 0,
                                   "maximum": 1
                                 },
+                                "max_tokens": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "provider_options": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
                                 "maxTokens": {
                                   "type": "number"
+                                },
+                                "providerOptions": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
+                                "textVerbosity": {
+                                  "type": "string",
+                                  "enum": [
+                                    "low",
+                                    "medium",
+                                    "high"
+                                  ]
                                 },
                                 "thinking": {
                                   "type": "object",
@@ -26207,8 +28423,35 @@
                                   "minimum": 0,
                                   "maximum": 1
                                 },
+                                "max_tokens": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "provider_options": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
                                 "maxTokens": {
                                   "type": "number"
+                                },
+                                "providerOptions": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
+                                "textVerbosity": {
+                                  "type": "string",
+                                  "enum": [
+                                    "low",
+                                    "medium",
+                                    "high"
+                                  ]
                                 },
                                 "thinking": {
                                   "type": "object",
@@ -26294,8 +28537,35 @@
                                       "minimum": 0,
                                       "maximum": 1
                                     },
+                                    "max_tokens": {
+                                      "type": "integer",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "provider_options": {
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {}
+                                    },
                                     "maxTokens": {
                                       "type": "number"
+                                    },
+                                    "providerOptions": {
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {}
+                                    },
+                                    "textVerbosity": {
+                                      "type": "string",
+                                      "enum": [
+                                        "low",
+                                        "medium",
+                                        "high"
+                                      ]
                                     },
                                     "thinking": {
                                       "type": "object",
@@ -26664,8 +28934,35 @@
                                   "minimum": 0,
                                   "maximum": 1
                                 },
+                                "max_tokens": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "provider_options": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
                                 "maxTokens": {
                                   "type": "number"
+                                },
+                                "providerOptions": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
+                                "textVerbosity": {
+                                  "type": "string",
+                                  "enum": [
+                                    "low",
+                                    "medium",
+                                    "high"
+                                  ]
                                 },
                                 "thinking": {
                                   "type": "object",
@@ -26759,8 +29056,35 @@
                                   "minimum": 0,
                                   "maximum": 1
                                 },
+                                "max_tokens": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "provider_options": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
                                 "maxTokens": {
                                   "type": "number"
+                                },
+                                "providerOptions": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
+                                "textVerbosity": {
+                                  "type": "string",
+                                  "enum": [
+                                    "low",
+                                    "medium",
+                                    "high"
+                                  ]
                                 },
                                 "thinking": {
                                   "type": "object",
@@ -26846,8 +29170,35 @@
                                       "minimum": 0,
                                       "maximum": 1
                                     },
+                                    "max_tokens": {
+                                      "type": "integer",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "provider_options": {
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {}
+                                    },
                                     "maxTokens": {
                                       "type": "number"
+                                    },
+                                    "providerOptions": {
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {}
+                                    },
+                                    "textVerbosity": {
+                                      "type": "string",
+                                      "enum": [
+                                        "low",
+                                        "medium",
+                                        "high"
+                                      ]
                                     },
                                     "thinking": {
                                       "type": "object",
@@ -27216,8 +29567,35 @@
                                   "minimum": 0,
                                   "maximum": 1
                                 },
+                                "max_tokens": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "provider_options": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
                                 "maxTokens": {
                                   "type": "number"
+                                },
+                                "providerOptions": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
+                                "textVerbosity": {
+                                  "type": "string",
+                                  "enum": [
+                                    "low",
+                                    "medium",
+                                    "high"
+                                  ]
                                 },
                                 "thinking": {
                                   "type": "object",
@@ -27311,8 +29689,35 @@
                                   "minimum": 0,
                                   "maximum": 1
                                 },
+                                "max_tokens": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "provider_options": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
                                 "maxTokens": {
                                   "type": "number"
+                                },
+                                "providerOptions": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
+                                "textVerbosity": {
+                                  "type": "string",
+                                  "enum": [
+                                    "low",
+                                    "medium",
+                                    "high"
+                                  ]
                                 },
                                 "thinking": {
                                   "type": "object",
@@ -27398,8 +29803,35 @@
                                       "minimum": 0,
                                       "maximum": 1
                                     },
+                                    "max_tokens": {
+                                      "type": "integer",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "provider_options": {
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {}
+                                    },
                                     "maxTokens": {
                                       "type": "number"
+                                    },
+                                    "providerOptions": {
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {}
+                                    },
+                                    "textVerbosity": {
+                                      "type": "string",
+                                      "enum": [
+                                        "low",
+                                        "medium",
+                                        "high"
+                                      ]
                                     },
                                     "thinking": {
                                       "type": "object",
@@ -27769,8 +30201,35 @@
                                 "minimum": 0,
                                 "maximum": 1
                               },
+                              "max_tokens": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "provider_options": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
                               "maxTokens": {
                                 "type": "number"
+                              },
+                              "providerOptions": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
+                              "textVerbosity": {
+                                "type": "string",
+                                "enum": [
+                                  "low",
+                                  "medium",
+                                  "high"
+                                ]
                               },
                               "thinking": {
                                 "type": "object",
@@ -27864,8 +30323,35 @@
                                 "minimum": 0,
                                 "maximum": 1
                               },
+                              "max_tokens": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "provider_options": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
                               "maxTokens": {
                                 "type": "number"
+                              },
+                              "providerOptions": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
+                              "textVerbosity": {
+                                "type": "string",
+                                "enum": [
+                                  "low",
+                                  "medium",
+                                  "high"
+                                ]
                               },
                               "thinking": {
                                 "type": "object",
@@ -27951,8 +30437,35 @@
                                     "minimum": 0,
                                     "maximum": 1
                                   },
+                                  "max_tokens": {
+                                    "type": "integer",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "provider_options": {
+                                    "type": "object",
+                                    "propertyNames": {
+                                      "type": "string"
+                                    },
+                                    "additionalProperties": {}
+                                  },
                                   "maxTokens": {
                                     "type": "number"
+                                  },
+                                  "providerOptions": {
+                                    "type": "object",
+                                    "propertyNames": {
+                                      "type": "string"
+                                    },
+                                    "additionalProperties": {}
+                                  },
+                                  "textVerbosity": {
+                                    "type": "string",
+                                    "enum": [
+                                      "low",
+                                      "medium",
+                                      "high"
+                                    ]
                                   },
                                   "thinking": {
                                     "type": "object",
@@ -28330,8 +30843,35 @@
                                 "minimum": 0,
                                 "maximum": 1
                               },
+                              "max_tokens": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "provider_options": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
                               "maxTokens": {
                                 "type": "number"
+                              },
+                              "providerOptions": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
+                              "textVerbosity": {
+                                "type": "string",
+                                "enum": [
+                                  "low",
+                                  "medium",
+                                  "high"
+                                ]
                               },
                               "thinking": {
                                 "type": "object",
@@ -28425,8 +30965,35 @@
                                 "minimum": 0,
                                 "maximum": 1
                               },
+                              "max_tokens": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "provider_options": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
                               "maxTokens": {
                                 "type": "number"
+                              },
+                              "providerOptions": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
+                              "textVerbosity": {
+                                "type": "string",
+                                "enum": [
+                                  "low",
+                                  "medium",
+                                  "high"
+                                ]
                               },
                               "thinking": {
                                 "type": "object",
@@ -28512,8 +31079,35 @@
                                     "minimum": 0,
                                     "maximum": 1
                                   },
+                                  "max_tokens": {
+                                    "type": "integer",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "provider_options": {
+                                    "type": "object",
+                                    "propertyNames": {
+                                      "type": "string"
+                                    },
+                                    "additionalProperties": {}
+                                  },
                                   "maxTokens": {
                                     "type": "number"
+                                  },
+                                  "providerOptions": {
+                                    "type": "object",
+                                    "propertyNames": {
+                                      "type": "string"
+                                    },
+                                    "additionalProperties": {}
+                                  },
+                                  "textVerbosity": {
+                                    "type": "string",
+                                    "enum": [
+                                      "low",
+                                      "medium",
+                                      "high"
+                                    ]
                                   },
                                   "thinking": {
                                     "type": "object",

@@ -8,6 +8,7 @@ import type { OhMyOpenCodeConfig } from "../config"
 import { getUltraworkMessage, HYPERPLAN_MESSAGE, TEAM_MESSAGE } from "../hooks/keyword-detector/constants"
 import { registerV2ContextHooks } from "./context-hooks"
 import { registerV2Hooks } from "./hooks"
+import { createV2DelegationSettings } from "./delegation-settings"
 
 const roots: string[] = []
 afterEach(async () => {
@@ -19,14 +20,33 @@ function mockContext(
 	failContextHook = false,
 	toolNames: string[] = [],
 	requests: Record<string, { settings?: Record<string, unknown>; body?: Record<string, unknown> }> = {},
+	sessionRows: Record<string, Record<string, unknown>> = {},
 ) {
 	const callbacks = new Map<string, (input: any) => unknown>()
 	const disposed: string[] = []
 	const agentGets: string[] = []
+	const storageValues = new Map<string, unknown>()
+	const sessions = new Map(Object.entries({
+		"ses-context-test": { id: "ses-context-test", agent: "sisyphus", projectID: "project", location: { directory } },
+		"ses-native-build": { id: "ses-native-build", agent: "build", projectID: "project", location: { directory } },
+		"ses-native-plan": { id: "ses-native-plan", agent: "plan", projectID: "project", location: { directory } },
+		...sessionRows,
+	}))
+	const storage = {
+		get: async (key: string) => storageValues.get(key) as never,
+		set: async (key: string, value: unknown) => { storageValues.set(key, value) },
+		remove: async (key: string) => { storageValues.delete(key) },
+		scan: async () => ({ entries: [] }),
+	}
 	const ctx = {
-		location: { directory },
-		storage: { get: async () => undefined, set: async () => undefined, remove: async () => undefined },
+		location: { directory, project: { id: "project" } },
+		storage,
 		session: {
+			get: async ({ sessionID }: { sessionID: string }) => {
+				const session = sessions.get(sessionID)
+				if (!session) throw new Error(`Unknown session ${sessionID}`)
+				return session
+			},
 			hook: async (name: string, callback: (input: any) => unknown) => {
 				if (failContextHook && name === "context") throw new Error("context registration failure")
 				callbacks.set(name, callback)
@@ -48,7 +68,7 @@ function mockContext(
 			transform: async () => ({ dispose: async () => undefined }),
 		},
 	}
-	return { ctx: ctx as unknown as Plugin.Context, callbacks, disposed, agentGets }
+	return { ctx: ctx as unknown as Plugin.Context, callbacks, disposed, agentGets, storage, storageValues, sessions }
 }
 
 function contextInput(sessionID = "ses-context-test"): SessionContext {
@@ -179,6 +199,96 @@ describe("native v2 context hooks", () => {
 		expect(agentGets).toContain("api-builder")
 		expect(input.options).toMatchObject({ temperature: 0.42, reasoningEffort: "high" })
 		expect(input.system.map((part) => part.text)).toContain(getUltraworkMessage("api-builder", "openai/mock"))
+		await cleanup()
+	})
+
+	test("applies durable selection only to the matching child session and after its base agent settings", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "omo-v2-context-test-"))
+		roots.push(directory)
+		const { ctx, callbacks, sessions } = mockContext(directory, false, [], {
+			"sisyphus-junior": { settings: { temperature: 0.2, reasoningEffort: "low" } },
+		}, {
+			"ses-selected-child": {
+				id: "ses-selected-child", parentID: "ses-parent", agent: "sisyphus-junior",
+				projectID: "project", location: { directory },
+			},
+			"ses-sibling": {
+				id: "ses-sibling", parentID: "ses-parent", agent: "sisyphus-junior",
+				projectID: "project", location: { directory },
+			},
+		})
+		const settings = createV2DelegationSettings(ctx.storage, ctx.location)
+		await settings.write({
+			sessionID: "ses-selected-child",
+			parentSessionID: "ses-parent",
+			agentID: "sisyphus-junior",
+			model: { providerID: "openai", id: "selected-model", variant: "high" },
+			settings: { temperature: 0.7, reasoningEffort: "high", topP: 0.83 },
+		})
+		const cleanup = await registerV2ContextHooks(ctx, {} as OhMyOpenCodeConfig)
+
+		const selectedChild = contextInput("ses-selected-child")
+		selectedChild.agent = "sisyphus-junior" as never
+		selectedChild.model = { providerID: "openai", id: "selected-model", variant: "high" } as never
+		await callbacks.get("context")?.(selectedChild)
+		expect(selectedChild.options).toMatchObject({ temperature: 0.7, reasoningEffort: "high", topP: 0.83 })
+
+		const sibling = contextInput("ses-sibling")
+		sibling.agent = "sisyphus-junior" as never
+		sibling.model = { providerID: "openai", id: "selected-model", variant: "high" } as never
+		await callbacks.get("context")?.(sibling)
+		expect(sibling.options).toMatchObject({ temperature: 0.2, reasoningEffort: "low" })
+		expect(sibling.options).not.toHaveProperty("topP")
+		expect(sessions.has("ses-selected-child")).toBe(true)
+		await cleanup()
+	})
+
+	test("clears inherited reasoning but preserves a null provider option", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "omo-v2-context-test-"))
+		roots.push(directory)
+		const { ctx, callbacks } = mockContext(directory, false, [], {
+			"sisyphus-junior": { settings: { reasoningEffort: "low", store: false } },
+		}, {
+			"ses-auto-reasoning": {
+				id: "ses-auto-reasoning", parentID: "ses-parent", agent: "sisyphus-junior",
+				projectID: "project", location: { directory },
+			},
+		})
+		const settings = createV2DelegationSettings(ctx.storage, ctx.location)
+		await settings.write({
+			sessionID: "ses-auto-reasoning",
+			parentSessionID: "ses-parent",
+			agentID: "sisyphus-junior",
+			model: { providerID: "openai", id: "selected-model" },
+			settings: { reasoningEffort: null, store: null },
+		})
+		const cleanup = await registerV2ContextHooks(ctx, {} as OhMyOpenCodeConfig)
+		const input = contextInput("ses-auto-reasoning")
+		input.agent = "sisyphus-junior" as never
+		input.model = { providerID: "openai", id: "selected-model" } as never
+		await callbacks.get("context")?.(input)
+		expect(input.options).not.toHaveProperty("reasoningEffort")
+		expect(input.options).toHaveProperty("store", null)
+		await cleanup()
+	})
+
+	test("fails a delegated primary request when its durable selection cannot be read", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "omo-v2-context-test-"))
+		roots.push(directory)
+		const { ctx, callbacks, storage } = mockContext(directory, false, [], {
+			"sisyphus-junior": { settings: { temperature: 0.2 } },
+		}, {
+			"ses-storage-failure": {
+				id: "ses-storage-failure", parentID: "ses-parent", agent: "sisyphus-junior",
+				projectID: "project", location: { directory },
+			},
+		})
+		storage.get = async () => { throw new Error("isolated storage read failure") }
+		const cleanup = await registerV2ContextHooks(ctx, {} as OhMyOpenCodeConfig)
+		const input = contextInput("ses-storage-failure")
+		input.agent = "sisyphus-junior" as never
+		input.model = { providerID: "openai", id: "selected-model" } as never
+		await expect(callbacks.get("context")?.(input)).rejects.toThrow("refusing to send a request with downgraded settings")
 		await cleanup()
 	})
 

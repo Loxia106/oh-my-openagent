@@ -4,9 +4,7 @@ import { z } from "zod"
 import type { OhMyOpenCodeConfig } from "../config"
 import { DEFAULT_CATEGORIES, CATEGORY_PROMPT_APPENDS, CATEGORY_PROMPT_APPEND_RESOLVERS } from "../tools/delegate-task/builtin-categories"
 import { buildTaskPrompt } from "../tools/delegate-task/prompt-builder"
-import { parseModelString } from "../shared/model-string-parser"
 import { isProviderDisabled } from "../shared/disabled-providers"
-import { CATEGORY_MODEL_REQUIREMENTS } from "../shared/model-requirements"
 import { stripInvisibleAgentCharacters } from "../shared/agent-display-names"
 import { resolvePromptAppend } from "../agents/builtin-agents/resolve-file-uri"
 import { log } from "../shared/logger"
@@ -14,7 +12,8 @@ import { addV2Tool } from "./tool-adapter"
 import { addV2LookAtTool } from "./tool-look-at"
 import { readOwnedChildSession, type V2SessionStatus } from "./session-history"
 import type { V2SubagentRunState } from "./task-state"
-import { createV2DelegationAdmission } from "./delegation-admission"
+import { createV2DelegationAdmission, resolveV2DelegationModelChoice } from "./delegation-admission"
+import type { DelegationModelChoice } from "./delegation-model-selection"
 
 type NativeSubagent = Info & { readonly id: string }
 type ToolConfig = Readonly<Record<string, boolean>>
@@ -88,90 +87,10 @@ export function resolveAgentId(requested: string, available: readonly { id: stri
   return agent.id
 }
 
-function modelString(value: string | { model: string; variant?: string } | undefined, variant?: string): string | undefined {
-  if (!value) return undefined
-  const modelText = typeof value === "string" ? value : value.model
-  const parsed = parseModelString(modelText)
-  if (!parsed) throw new ToolError({ message: `Invalid model "${modelText}". Expected provider/model.` })
-  const requestedVariant = variant ?? (typeof value === "string" ? undefined : value.variant) ?? parsed.variant
-  return `${parsed.providerID}/${parsed.modelID}${requestedVariant ? `#${requestedVariant}` : ""}`
-}
-
-type CategoryModelConfig = {
-  model?: string
-  models?: readonly (string | { model: string; variant?: string })[]
-  fallback_models?: string | readonly (string | { model: string; variant?: string })[]
-  variant?: string
-}
-
-function modelBase(value: string): string {
-  return value.split("#", 1)[0]!
-}
-
-/** Resolve only models the live V2 model registry can actually run. */
-async function resolveCategoryModel(
-  ctx: Plugin.Context,
-  name: string,
-  builtIn: CategoryModelConfig,
-  configured: CategoryModelConfig | undefined,
-  disabledProviders: readonly string[] = [],
-): Promise<string | undefined> {
-  const available = new Set((await ctx.model.list()).data
-    .filter((model) => model.enabled && !isProviderDisabled(`${model.providerID}/${model.id}`, disabledProviders))
-    .map((model) => `${model.providerID}/${model.id}`))
-  const explicit = configured !== undefined && (
-    configured.model !== undefined || (configured.models?.length ?? 0) > 0 || configured.fallback_models !== undefined
-  )
-  const fallbackEntries = (value: CategoryModelConfig["fallback_models"]) =>
-    value === undefined ? [] : typeof value === "string" ? [value] : [...value]
-  const configuredEntries = configured?.models?.length
-    ? [...configured.models]
-    : configured?.model !== undefined
-      ? [configured.model, ...fallbackEntries(configured.fallback_models)]
-      : configured?.fallback_models === undefined
-        ? undefined
-        : fallbackEntries(configured.fallback_models)
-  const builtInEntries = builtIn.models?.length
-    ? [...builtIn.models]
-    : builtIn.model !== undefined
-      ? [builtIn.model, ...fallbackEntries(builtIn.fallback_models)]
-      : fallbackEntries(builtIn.fallback_models)
-  const candidates = explicit
-    ? (configuredEntries?.map((entry) => modelString(entry, configured?.variant)) ?? [])
-    : builtInEntries.map((entry) => modelString(entry, builtIn.variant))
-  const selected = candidates.find((candidate) => candidate !== undefined && available.has(modelBase(candidate)))
-  if (selected) return selected
-
-  if (explicit) {
-    const requested = candidates.filter((candidate): candidate is string => candidate !== undefined)
-    const disabled = requested.filter((candidate) => isProviderDisabled(candidate, disabledProviders))
-    const allowed = requested.filter((candidate) => !isProviderDisabled(candidate, disabledProviders))
-    throw new ToolError({
-      message: disabled.length > 0 && allowed.length === 0
-        ? `Configured model${requested.length === 1 ? "" : " chain"} for category "${name}" only uses providers listed in disabled_providers: ${disabled.join(" -> ")}. Add an allowed model to the category chain or enable its provider.`
-        : `Configured model${requested.length === 1 ? "" : " chain"} for category "${name}" is unavailable: ${requested.join(" -> ") || "no valid provider/model was configured"}. Check connected providers or update the category model configuration.`,
-    })
-  }
-
-  const requirement = CATEGORY_MODEL_REQUIREMENTS[name]
-  if (requirement) {
-    const fallback = requirement.fallbackChain.find((entry) =>
-      entry.providers.some((provider) =>
-        !isProviderDisabled(`${provider}/${entry.model}`, disabledProviders) && available.has(`${provider}/${entry.model}`),
-      ))
-    if (fallback) {
-      const provider = fallback.providers.find((candidate) =>
-        !isProviderDisabled(`${candidate}/${fallback.model}`, disabledProviders) && available.has(`${candidate}/${fallback.model}`),
-      )!
-      return `${provider}/${fallback.model}${fallback.variant ? `#${fallback.variant}` : ""}`
-    }
-    if (requirement.requiresAnyModel || requirement.requiresModel) {
-      const candidates = requirement.fallbackChain.map((entry) => `${entry.providers.join("|")}/${entry.model}`).join(", ")
-      throw new ToolError({ message: `Category "${name}" requires an available model, but none of its supported models are connected (${candidates}). Connect one of those providers or configure a different category.` })
-    }
-  }
-
-  return undefined
+function modelChoiceText(choice: DelegationModelChoice | undefined): string | undefined {
+  if (!choice) return undefined
+  const model = choice.model
+  return `${model.providerID}/${model.id}${model.variant ? `#${model.variant}` : ""}`
 }
 
 export function toolRestrictionsToActions(tools: ToolConfig | undefined): string[] {
@@ -430,15 +349,16 @@ function registerToolAliases(input: {
   config: OhMyOpenCodeConfig
   native: NativeSubagent
   nativeSkill?: NativeSubagent
+  admission: ReturnType<typeof createV2DelegationAdmission>
   runs: V2SubagentRunState
   childSessions: Map<string, Set<string>>
   invocations: AliasInvocations
 }) {
-  const { editor, ctx, config, native, nativeSkill, runs, childSessions, invocations } = input
+  const { editor, ctx, config, native, nativeSkill, admission, runs, childSessions, invocations } = input
   const nativeRead = editor.get("read")
 
   const launch = async (
-    request: { agent: string; description: string; prompt: string; model?: string; sessionID?: string; background: boolean; blockedActions?: string[] },
+    request: { agent: string; description: string; prompt: string; model?: string; modelSelection?: DelegationModelChoice; sessionID?: string; background: boolean; blockedActions?: string[] },
     toolContext: ToolContext,
   ) => {
     // Agent transforms can change the visible catalog after tool transforms run.
@@ -484,11 +404,11 @@ function registerToolAliases(input: {
       agent: agentID,
       description: request.description,
       prompt: request.prompt,
-      ...(!request.sessionID && request.model ? { model: request.model } : {}),
+      ...(!request.sessionID && !request.modelSelection && request.model ? { model: request.model } : {}),
       ...(request.sessionID ? { sessionID: request.sessionID } : {}),
       ...(request.background ? { background: true } : {}),
     }
-    const result = await native.execute(nativeInput, delegatedContext)
+    const result = await admission.invokeWithSelection(native, nativeInput, delegatedContext, request.modelSelection)
     return result
   }
 
@@ -523,6 +443,7 @@ function registerToolAliases(input: {
           agent = existing.agent
         }
         let model: string | undefined
+        let modelSelection: DelegationModelChoice | undefined
         let categoryAppend: string | undefined
         let blockedActions: string[] = []
         if (args.category) {
@@ -533,10 +454,13 @@ function registerToolAliases(input: {
             throw new ToolError({ message: `Unknown or disabled category "${categoryName}". Available categories: ${names}.` })
           }
           agent = "sisyphus-junior"
-          // A resumed native session keeps its existing model; resolve category model only for a new child.
-          model = args.task_id
+          // A resumed child keeps its persisted model/settings. New category
+          // children resolve a rich choice once and pass it through the
+          // admission instance's private WeakMap, never native input fields.
+          modelSelection = args.task_id
             ? undefined
-            : await resolveCategoryModel(ctx, categoryName, categoryConfig, config.categories?.[categoryName], config.disabled_providers)
+            : await resolveV2DelegationModelChoice(ctx, config, agent, context.sessionID, categoryName)
+          model = modelChoiceText(modelSelection)
           const userPromptAppend = config.categories?.[categoryName]?.prompt_append
           const modelPromptAppend = CATEGORY_PROMPT_APPEND_RESOLVERS[categoryName]?.(model)
           categoryAppend = [
@@ -559,6 +483,7 @@ function registerToolAliases(input: {
           description: args.description?.trim() || args.prompt.trim().split(/\s+/).slice(0, 5).join(" "),
           prompt,
           model,
+          modelSelection,
           sessionID: args.task_id,
           background: runInBackground,
           blockedActions,
@@ -732,7 +657,7 @@ export async function registerV2Delegation(
   const invocations: AliasInvocations = new Map()
   const delegationAdmission = createV2DelegationAdmission({
     ctx,
-    config: config.background_task,
+    config,
     runs,
     childSessions,
     isAliasInvocation: (context) => invocations.has(invocationKey(context)),
@@ -753,7 +678,7 @@ export async function registerV2Delegation(
       }
       const nativeSkill = editor.get("skill")
       if (toolDisabled(config, "task")) editor.remove("subagent")
-      registerToolAliases({ editor, ctx, config, native, nativeSkill, runs, childSessions, invocations })
+      registerToolAliases({ editor, ctx, config, native, nativeSkill, admission: delegationAdmission, runs, childSessions, invocations })
     })
     eventLoop = (async () => {
       try {
@@ -770,7 +695,10 @@ export async function registerV2Delegation(
             } else if (event.type === "session.execution.interrupted") {
               await runs.markTerminal(event.data.sessionID, "interrupted", event.created)
             } else if (event.type === "session.deleted") {
-              await runs.remove(event.data.sessionID)
+              await Promise.all([
+                runs.remove(event.data.sessionID),
+                delegationAdmission.removeSettings(event.data.sessionID),
+              ])
             }
           } catch (error) {
             log("[v2 delegation] Failed to update child execution state for an event.", error)

@@ -8,6 +8,9 @@ import { registerV2SafetyHooks } from "./safety-hooks"
 import { registerV2ToolHooks } from "./tool-hooks"
 import { registerV2BackgroundToolPolicy } from "./background-tool-policy"
 import { getV2SubagentRunState } from "./task-state"
+import { registerV2TodoDescriptionOverride } from "./todo-description-override"
+import { registerV2PlanFormatValidator } from "./plan-format-validator"
+import { registerV2AgentUsageReminder } from "./agent-usage-reminder"
 
 async function unwind(cleanups: Array<() => Promise<void>>): Promise<unknown[]> {
 	const errors: unknown[] = []
@@ -27,6 +30,9 @@ export async function registerV2Hooks(ctx: Plugin.Context, config: OhMyOpenCodeC
 	try {
 		cleanups.push(await registerV2ContextHooks(ctx, config))
 		cleanups.push(await registerV2ToolHooks(ctx, config))
+		cleanups.push(await registerV2TodoDescriptionOverride(ctx, config))
+		cleanups.push(await registerV2PlanFormatValidator(ctx, config))
+		cleanups.push(await registerV2AgentUsageReminder(ctx, config))
 		cleanups.push(await registerV2SafetyHooks(ctx, config))
 		cleanups.push(await registerV2InstructionHooks(ctx, config))
 		cleanups.push(await registerV2RecoveryHooks(ctx, config))

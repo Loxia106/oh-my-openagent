@@ -3,10 +3,13 @@ import { realpathSync } from "node:fs"
 import { normalize, resolve } from "node:path"
 import type { Plugin } from "@opencode/plugin"
 import type { BackgroundTaskConfig } from "../config/schema"
+import { TASK_TTL_MS } from "../features/background-agent/constants"
+import { createV2BackgroundActivityMonitor, type BackgroundActivityLease } from "./background-activity"
 
 const LEASE_KEY_ROOT = "oh-my-openagent:v2:background-admission:lease:"
 const STORAGE_PAGE_SIZE = 100
 const SESSION_IDLE_WAIT_TIMEOUT_MS = 10_000
+const MAX_TIMER_DELAY_MS = 2_147_483_647
 
 export type AdmissionOutcome = "succeeded" | "failed" | "interrupted"
 export type AdmissionMode = "new" | "resume"
@@ -51,6 +54,7 @@ type StoredLease = {
 	outcome: AdmissionOutcome | null
 	createdAt: number
 	updatedAt: number
+	boundAt?: number | null
 	creationStarted: boolean
 	supersedes: string | null
 	adoptedUntrackedResume: boolean
@@ -59,6 +63,19 @@ type StoredLease = {
 type Lineage = { rootSessionID: string; parentDepth: number; projectID: string; sessionIDs: string[] }
 export type BackgroundAdmissionPool = { key: string; limit: number; unlimited: boolean }
 
+/** Injectable timer surface for deterministic admission-queue tests. */
+export type BackgroundAdmissionClock = {
+	now(): number
+	setTimeout(callback: () => void, delayMs: number): unknown
+	clearTimeout(timer: unknown): void
+}
+
+const systemClock: BackgroundAdmissionClock = {
+	now: () => Date.now(),
+	setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
+	clearTimeout: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
+}
+
 type SlotWaiter = {
 	leaseID: string
 	pool: BackgroundAdmissionPool
@@ -66,6 +83,8 @@ type SlotWaiter = {
 	reject: (error: Error) => void
 	signal?: AbortSignal
 	abortHandler?: () => void
+	expiresAt: number
+	expiryTimer?: unknown
 	settled: boolean
 }
 
@@ -133,6 +152,7 @@ function decodeLease(value: unknown): StoredLease | undefined {
 		!(value.outcome === null || isAdmissionOutcome(value.outcome)) ||
 		!isFiniteNumber(value.createdAt) ||
 		!isFiniteNumber(value.updatedAt) ||
+		!(value.boundAt === undefined || value.boundAt === null || isFiniteNumber(value.boundAt)) ||
 		typeof value.creationStarted !== "boolean" ||
 		!(value.supersedes === null || typeof value.supersedes === "string") ||
 		typeof value.adoptedUntrackedResume !== "boolean"
@@ -197,6 +217,23 @@ function canonicalDirectory(directory: string): string {
 	}
 }
 
+function activityLease(lease: StoredLease): BackgroundActivityLease {
+	return {
+		leaseID: lease.leaseID,
+		rootSessionID: lease.rootSessionID,
+		parentSessionID: lease.parentSessionID,
+		childSessionID: lease.childSessionID,
+		model: lease.model,
+		mode: lease.mode,
+		generation: lease.generation,
+		status: lease.status,
+		baselineIdle: lease.baselineIdle,
+		createdAt: lease.createdAt,
+		boundAt: lease.boundAt ?? null,
+		startedSeq: lease.startedSeq,
+	}
+}
+
 function abortError(): Error {
 	return new Error("Background admission was cancelled before native child execution began.")
 }
@@ -231,6 +268,7 @@ function isTerminalIdleForLease(info: SessionInfo, lease: StoredLease): boolean 
 export function createV2BackgroundAdmission(
 	ctx: Plugin.Context,
 	config?: BackgroundTaskConfig,
+	clock: BackgroundAdmissionClock = systemClock,
 ): V2BackgroundAdmission {
 	const records = new Map<string, StoredLease>()
 	const waiters = new Map<string, SlotWaiter[]>()
@@ -238,8 +276,10 @@ export function createV2BackgroundAdmission(
 	const scopedLeasePrefix = leasePrefix(ctx)
 	let unhealthy: string | undefined
 	let disposed = false
+	let disposePromise: Promise<void> | undefined
 	let lock = Promise.resolve()
 	let readyPromise: Promise<void> | undefined
+	let activity: ReturnType<typeof createV2BackgroundActivityMonitor> | undefined
 
 	async function serialized<T>(operation: () => Promise<T>): Promise<T> {
 		const previous = lock
@@ -256,16 +296,71 @@ export function createV2BackgroundAdmission(
 	function failClosed(reason: string): void {
 		if (unhealthy) return
 		unhealthy = reason
+		activity?.stop()
 		const error = new Error(`Background admission is fail-closed: ${reason}`)
 		for (const queue of waiters.values()) {
 			for (const waiter of queue) {
 				if (waiter.settled) continue
-				waiter.settled = true
-				if (waiter.abortHandler) waiter.signal?.removeEventListener("abort", waiter.abortHandler)
+				settleWaiter(waiter)
 				waiter.reject(error)
 			}
 		}
 		waiters.clear()
+	}
+
+	function clearWaiterTimer(waiter: SlotWaiter): void {
+		if (waiter.expiryTimer === undefined) return
+		clock.clearTimeout(waiter.expiryTimer)
+		waiter.expiryTimer = undefined
+	}
+
+	function settleWaiter(waiter: SlotWaiter): void {
+		waiter.settled = true
+		clearWaiterTimer(waiter)
+		if (waiter.abortHandler) waiter.signal?.removeEventListener("abort", waiter.abortHandler)
+	}
+
+	function timeoutError(waiter: SlotWaiter): Error {
+		const ttl = config?.taskTtlMs ?? TASK_TTL_MS
+		return new Error(`Background admission queue expired after ${ttl} ms (background_task.taskTtlMs); no native child was created for lease ${waiter.leaseID}.`)
+	}
+
+	function armWaiterExpiry(waiter: SlotWaiter): void {
+		const remaining = Math.max(0, waiter.expiresAt - clock.now())
+		const timer = clock.setTimeout(() => {
+			if (waiter.expiryTimer !== timer) return
+			waiter.expiryTimer = undefined
+			void expireWaiter(waiter).catch((error) => {
+				failClosed(`Could not expire queued lease ${waiter.leaseID}: ${errorText(error)}`)
+			})
+		}, Math.min(remaining, MAX_TIMER_DELAY_MS))
+		waiter.expiryTimer = timer
+	}
+
+	async function expireWaiter(waiter: SlotWaiter): Promise<void> {
+		await serialized(async () => {
+			if (waiter.settled) return
+			const queue = waiters.get(waiter.pool.key)
+			const index = queue?.indexOf(waiter) ?? -1
+			if (index < 0) return
+			const remaining = waiter.expiresAt - clock.now()
+			if (remaining > 0) {
+				armWaiterExpiry(waiter)
+				return
+			}
+
+			queue!.splice(index, 1)
+			if (queue!.length === 0) waiters.delete(waiter.pool.key)
+			settleWaiter(waiter)
+			try {
+				await rollbackRecordLocked(waiter.leaseID, true, false)
+			} catch (error) {
+				waiter.reject(error instanceof Error ? error : new Error(String(error)))
+				return
+			}
+			waiter.reject(timeoutError(waiter))
+			await admitWaiters(waiter.pool)
+		})
 	}
 
 	function assertHealthy(): void {
@@ -307,6 +402,7 @@ export function createV2BackgroundAdmission(
 	async function removeLease(lease: StoredLease): Promise<void> {
 		await removePersisted(lease)
 		records.delete(lease.leaseID)
+		await activity?.removeLease(lease.leaseID, lease.generation)
 	}
 
 	function modelPool(lease: StoredLease): BackgroundAdmissionPool {
@@ -397,8 +493,38 @@ export function createV2BackgroundAdmission(
 		}
 		const pool = modelPool(current)
 		await saveLease(next)
+		await activity?.markTerminal(leaseID, generation)
 		await admitWaiters(pool)
 	}
+
+	activity = createV2BackgroundActivityMonitor({
+		ctx,
+		config,
+		getLeases: () => [...records.values()].map(activityLease),
+		getLease: (leaseID) => {
+			const lease = records.get(leaseID)
+			return lease ? activityLease(lease) : undefined
+		},
+		reconcileIdle: async (lease, info) => serialized(async () => {
+			const current = records.get(lease.leaseID)
+			if (!current || current.status !== "running" || current.generation !== lease.generation ||
+				current.childSessionID !== lease.childSessionID || current.parentSessionID !== lease.parentSessionID ||
+				current.rootSessionID !== lease.rootSessionID || !sessionMatchesContext(info) ||
+				!isTerminalIdleForLease(info, current)) return false
+			await markTerminal(current.leaseID, current.generation, info.outcome!, current.lastTerminalSeq, current.terminalEventID)
+			return records.get(current.leaseID)?.status === "terminal"
+		}),
+		removeMissing: async (lease) => serialized(async () => {
+			const current = records.get(lease.leaseID)
+			if (!current || current.status !== "running" || current.generation !== lease.generation ||
+				current.childSessionID !== lease.childSessionID || current.parentSessionID !== lease.parentSessionID ||
+				current.rootSessionID !== lease.rootSessionID) return
+			const pool = modelPool(current)
+			await removeLease(current)
+			await admitWaiters(pool)
+		}),
+		onFailure: (reason) => failClosed(reason),
+	})
 
 	async function reconcileRestoredLease(lease: StoredLease): Promise<void> {
 		if (!lease.childSessionID || lease.status === "terminal") return
@@ -446,6 +572,8 @@ export function createV2BackgroundAdmission(
 				if (after) cursors.add(after)
 			} while (after)
 
+			await activity?.ready()
+
 			for (const lease of [...records.values()]) {
 				if (lease.status === "queued" || lease.status === "reserved") {
 					// A persisted pre-create reservation cannot have started a native child.
@@ -460,6 +588,7 @@ export function createV2BackgroundAdmission(
 				}
 				await reconcileRestoredLease(lease)
 			}
+			if (!unhealthy && !disposed) await activity?.start()
 		} catch (error) {
 			failClosed(`Could not restore background admission leases: ${errorText(error)}`)
 		}
@@ -493,26 +622,35 @@ export function createV2BackgroundAdmission(
 			const waiter = queue.shift()!
 			if (waiter.settled || waiter.signal?.aborted) {
 				if (!waiter.settled) {
-					waiter.settled = true
-					if (waiter.abortHandler) waiter.signal?.removeEventListener("abort", waiter.abortHandler)
+					settleWaiter(waiter)
 					await rollbackRecordLocked(waiter.leaseID, true, false)
 					waiter.reject(abortError())
 				}
 				continue
 			}
+			if (waiter.expiresAt <= clock.now()) {
+				settleWaiter(waiter)
+				try {
+					await rollbackRecordLocked(waiter.leaseID, true, false)
+				} catch (error) {
+					waiter.reject(error instanceof Error ? error : new Error(String(error)))
+					throw error
+				}
+				waiter.reject(timeoutError(waiter))
+				continue
+			}
 			const current = records.get(waiter.leaseID)
 			if (!current) {
-				waiter.settled = true
+				settleWaiter(waiter)
 				waiter.reject(new Error(`Queued background admission lease ${waiter.leaseID} is missing.`))
 				continue
 			}
 			try {
 				await saveLease({ ...current, status: slotStatus(current), updatedAt: Date.now() })
-				waiter.settled = true
-				if (waiter.abortHandler) waiter.signal?.removeEventListener("abort", waiter.abortHandler)
+				settleWaiter(waiter)
 				waiter.resolve()
 			} catch (error) {
-				waiter.settled = true
+				settleWaiter(waiter)
 				waiter.reject(error instanceof Error ? error : new Error(String(error)))
 				throw error
 			}
@@ -523,12 +661,11 @@ export function createV2BackgroundAdmission(
 	async function cancelWaiter(waiter: SlotWaiter): Promise<void> {
 		await serialized(async () => {
 			if (waiter.settled) return
-			waiter.settled = true
 			const queue = waiters.get(waiter.pool.key) ?? []
 			const index = queue.indexOf(waiter)
 			if (index >= 0) queue.splice(index, 1)
 			if (queue.length === 0) waiters.delete(waiter.pool.key)
-			if (waiter.abortHandler) waiter.signal?.removeEventListener("abort", waiter.abortHandler)
+			settleWaiter(waiter)
 			try {
 				await rollbackRecordLocked(waiter.leaseID, true, false)
 				waiter.reject(abortError())
@@ -555,13 +692,15 @@ export function createV2BackgroundAdmission(
 			}
 			const queue = waiters.get(pool.key) ?? []
 			const promise = new Promise<void>((resolve, reject) => {
-				const waiter: SlotWaiter = { leaseID: lease.leaseID, pool, resolve, reject, signal, settled: false }
+				const ttl = config?.taskTtlMs ?? TASK_TTL_MS
+				const waiter: SlotWaiter = { leaseID: lease.leaseID, pool, resolve, reject, signal, expiresAt: clock.now() + ttl, settled: false }
 				if (signal) {
 					waiter.abortHandler = () => { void cancelWaiter(waiter).catch(() => undefined) }
 					signal.addEventListener("abort", waiter.abortHandler, { once: true })
 				}
 				queue.push(waiter)
 				waiters.set(pool.key, queue)
+				armWaiterExpiry(waiter)
 			})
 			return { promise }
 		})
@@ -650,6 +789,7 @@ export function createV2BackgroundAdmission(
 			outcome: null,
 			createdAt: now,
 			updatedAt: now,
+			boundAt: null,
 			creationStarted: false,
 			supersedes: prior?.leaseID ?? null,
 			adoptedUntrackedResume,
@@ -795,10 +935,20 @@ export function createV2BackgroundAdmission(
 						childSessionID,
 						baselineIdle: isFiniteNumber(info.time.idle) ? info.time.idle : null,
 						startedSeq: null,
+						boundAt: Date.now(),
 						status: "running",
 						updatedAt: Date.now(),
 					})
 				})
+				const bound = records.get(lease.leaseID)
+				if (bound) {
+					try {
+						await activity?.bind(activityLease(bound))
+					} catch (error) {
+						failClosed(`Could not initialize activity monitoring for child ${childSessionID}: ${errorText(error)}`)
+						throw error
+					}
+				}
 			},
 			rollback: async (options = {}) => {
 				await ensureReady()
@@ -919,22 +1069,38 @@ export function createV2BackgroundAdmission(
 		if (disposed) return
 		if (!isObject(event)) return
 		try {
+			await ensureReady()
+			await activity?.observe(event)
 			await releaseFromEvent(event as AdmissionEvent)
+			if (event.type === "session.deleted" && typeof (event as AdmissionEvent).data?.sessionID === "string") {
+				await activity?.removeSession((event as AdmissionEvent).data!.sessionID!)
+			}
 		} catch (error) {
 			failClosed(`Execution event reconciliation failed: ${errorText(error)}`)
 		}
 	}
 
-	async function dispose(): Promise<void> {
-		await ensureReady()
-		await serialized(async () => {
-			disposed = true
+	function dispose(): Promise<void> {
+		if (disposePromise) return disposePromise
+		// Close the public admission path before awaiting activity flushes so a new
+		// caller cannot begin native work during plugin teardown.
+		disposed = true
+		disposePromise = (async () => {
+			await ensureReady()
+			activity?.stop()
+			try {
+				await activity?.dispose()
+			} catch (error) {
+				// A failed activity flush has already been surfaced through the
+				// fail-closed diagnostic path. Still dispose queued admission state.
+				failClosed(`Could not flush child activity during disposal: ${errorText(error)}`)
+			}
+			await serialized(async () => {
 			for (const pending of pendingIdleWaits) pending.abort()
 			for (const queue of waiters.values()) {
 				for (const waiter of queue.splice(0)) {
 					if (waiter.settled) continue
-					waiter.settled = true
-					if (waiter.abortHandler) waiter.signal?.removeEventListener("abort", waiter.abortHandler)
+					settleWaiter(waiter)
 					try {
 						await rollbackRecordLocked(waiter.leaseID, true, false)
 						waiter.reject(new Error("Background admission disposed while waiting for concurrency."))
@@ -949,7 +1115,9 @@ export function createV2BackgroundAdmission(
 					try { await rollbackRecordLocked(lease.leaseID, true, false) } catch { /* persisted reservation stays fail-closed */ }
 				}
 			}
-		})
+			})
+		})()
+		return disposePromise
 	}
 
 	return {

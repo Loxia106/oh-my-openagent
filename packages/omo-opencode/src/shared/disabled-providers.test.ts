@@ -135,6 +135,119 @@ describe("applyDisabledProviders", () => {
     expect(agents.sisyphus.fallback_models).toEqual(["opencode-go/glm-5.1"])
   })
 
+  test("promotes the selected rich fallback settings with its model", () => {
+    const config = {
+      disabled_providers: ["blocked"],
+      categories: {
+        deep: {
+          model: "blocked/private",
+          reasoningEffort: "low",
+          temperature: 0.1,
+          top_p: 0.2,
+          max_tokens: 100,
+          thinking: { type: "disabled" },
+          fallback_models: [
+            {
+              model: "openai/selected",
+              variant: "high",
+              reasoning: "high",
+              temperature: 0.7,
+              top_p: 0.9,
+              maxTokens: 2000,
+              thinking: { type: "enabled", budgetTokens: 500 },
+            },
+          ],
+        },
+      },
+    } as unknown as OhMyOpenCodeConfig
+
+    applyDisabledProviders(config)
+
+    const category = config.categories!.deep!
+    expect(category.model).toBe("openai/selected")
+    expect(category.variant).toBe("high")
+    expect(category.reasoning).toBe("high")
+    expect(category.reasoningEffort).toBeUndefined()
+    expect(category.temperature).toBe(0.7)
+    expect(category.top_p).toBe(0.9)
+    expect(category.max_tokens).toBe(2000)
+    expect(category.maxTokens).toBe(2000)
+    expect(category.thinking).toEqual({ type: "enabled", budgetTokens: 500 })
+  })
+
+  test("keeps an explicit holder variant when promoting fallback settings", () => {
+    const config = {
+      disabled_providers: ["blocked"],
+      agents: {
+        oracle: {
+          model: "blocked/private",
+          variant: "medium",
+          fallback_models: [{ model: "openai/selected", variant: "high", temperature: 0.4 }],
+        },
+      },
+    } as unknown as OhMyOpenCodeConfig
+
+    applyDisabledProviders(config)
+
+    expect(config.agents!.oracle!.model).toBe("openai/selected")
+    expect(config.agents!.oracle!.variant).toBe("medium")
+    expect(config.agents!.oracle!.temperature).toBe(0.4)
+  })
+
+  test("promotes canonical token and provider options without losing entry thinking", () => {
+    const config = {
+      disabled_providers: ["blocked"],
+      agents: {
+        explore: {
+          model: "blocked/private",
+          maxTokens: 100,
+          thinking: { type: "disabled" },
+          providerOptions: { store: true },
+          fallback_models: [{
+            model: "openai/selected",
+            max_tokens: 2468,
+            provider_options: {
+              store: false,
+              parallelToolCalls: false,
+              thinking: { type: "enabled", budgetTokens: 320 },
+              textVerbosity: "high",
+            },
+          }],
+        },
+      },
+      categories: {
+        deep: {
+          model: "blocked/private",
+          max_tokens: 200,
+          thinking: { type: "disabled" },
+          provider_options: { parallelToolCalls: true },
+          fallback_models: [{
+            model: "openai/selected",
+            max_tokens: 3579,
+            provider_options: { parallelToolCalls: false, thinking: { type: "enabled", budgetTokens: 640 } },
+          }],
+        },
+      },
+    } as unknown as OhMyOpenCodeConfig
+
+    applyDisabledProviders(config)
+
+    expect(config.agents!.explore).toMatchObject({
+      model: "openai/selected",
+      maxTokens: 2468,
+      thinking: { type: "enabled", budgetTokens: 320 },
+      textVerbosity: "high",
+      providerOptions: { store: false, parallelToolCalls: false },
+    })
+    expect(config.categories!.deep).toMatchObject({
+      model: "openai/selected",
+      maxTokens: 3579,
+      max_tokens: 3579,
+      thinking: { type: "enabled", budgetTokens: 640 },
+      provider_options: { parallelToolCalls: false },
+    })
+  })
+
   test("leaves primary unchanged but records a config-load error when every chain entry is also disabled", () => {
     const config = {
       disabled_providers: ["github-copilot"],

@@ -1,8 +1,7 @@
 import type { OhMyOpenCodeConfig } from "../config"
-import type { FallbackModelObject } from "../config/schema/fallback-models"
+import type { FallbackModelObject, FallbackModels } from "../config/schema/fallback-models"
 import { addConfigLoadError } from "./config-errors"
 import { log } from "./logger"
-import { normalizeFallbackModels } from "./model-resolver"
 
 const HOOK_NAME = "disabled-providers"
 
@@ -37,23 +36,86 @@ export function filterDisabledProviderModels<T extends string | FallbackModelObj
 
 type ModelHolder = {
   model?: string | unknown
-  fallback_models?: string | (string | FallbackModelObject)[]
+  fallback_models?: FallbackModels
+  variant?: string
+  reasoning?: FallbackModelObject["reasoning"]
+  reasoningEffort?: FallbackModelObject["reasoningEffort"]
+  temperature?: number
+  top_p?: number
+  max_tokens?: number
+  maxTokens?: number
+  provider_options?: Readonly<Record<string, unknown>>
+  providerOptions?: Readonly<Record<string, unknown>>
+  thinking?: FallbackModelObject["thinking"]
+  textVerbosity?: FallbackModelObject["textVerbosity"]
+}
+
+function isThinkingOption(value: unknown): value is NonNullable<ModelHolder["thinking"]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const entry = value as Record<string, unknown>
+  return (entry.type === "enabled" || entry.type === "disabled") &&
+    (entry.budgetTokens === undefined || typeof entry.budgetTokens === "number")
+}
+
+function isTextVerbosity(value: unknown): value is NonNullable<ModelHolder["textVerbosity"]> {
+  return value === "low" || value === "medium" || value === "high"
+}
+
+function fallbackEntries(value: FallbackModels | undefined): (string | FallbackModelObject)[] | undefined {
+  if (!value) return undefined
+  return typeof value === "string" ? [value] : [...value]
 }
 
 function findFirstAllowedReplacement(
   chain: (string | FallbackModelObject)[] | undefined,
   disabled: readonly string[],
-): string | undefined {
+): string | FallbackModelObject | undefined {
   if (!chain) return undefined
   for (const entry of chain) {
     const model = typeof entry === "string" ? entry : entry.model
-    if (!isProviderDisabled(model, disabled)) return model
+    if (!isProviderDisabled(model, disabled)) return entry
   }
   return undefined
 }
 
+function promoteFallbackSettings(holder: ModelHolder, replacement: string | FallbackModelObject, label: string): string {
+  if (typeof replacement === "string") return replacement
+  if (holder.variant === undefined && replacement.variant !== undefined) holder.variant = replacement.variant
+  if (replacement.reasoning !== undefined) {
+    holder.reasoning = replacement.reasoning
+    // A canonical reasoning choice must not be downgraded by a base direct
+    // generation option; V2 applies the selected variant/settings at request time.
+    holder.reasoningEffort = undefined
+  } else if (replacement.reasoningEffort !== undefined && holder.reasoning === undefined) {
+    holder.reasoningEffort = replacement.reasoningEffort
+  }
+  if (replacement.temperature !== undefined) holder.temperature = replacement.temperature
+  if (replacement.top_p !== undefined) holder.top_p = replacement.top_p
+  const maxTokens = replacement.max_tokens ?? replacement.maxTokens
+  if (maxTokens !== undefined) {
+    holder.maxTokens = maxTokens
+    // A category may still contain the legacy alias, which otherwise shadows
+    // this promoted value during model selection.
+    if (holder.max_tokens !== undefined) holder.max_tokens = maxTokens
+  }
+  const providerOptions = replacement.provider_options ?? replacement.providerOptions
+  if (providerOptions !== undefined) {
+    const merged = {
+      ...(label.startsWith("agents.") ? holder.providerOptions : holder.provider_options),
+      ...providerOptions,
+    }
+    if (label.startsWith("agents.")) holder.providerOptions = merged
+    else holder.provider_options = merged
+    if (isThinkingOption(providerOptions.thinking)) holder.thinking = providerOptions.thinking
+    if (isTextVerbosity(providerOptions.textVerbosity)) holder.textVerbosity = providerOptions.textVerbosity
+  }
+  if (replacement.thinking !== undefined) holder.thinking = replacement.thinking
+  if (replacement.textVerbosity !== undefined) holder.textVerbosity = replacement.textVerbosity
+  return replacement.model
+}
+
 function applyToHolder(label: string, holder: ModelHolder, disabled: readonly string[]): void {
-  const normalizedChain = normalizeFallbackModels(holder.fallback_models)
+  const normalizedChain = fallbackEntries(holder.fallback_models)
   if (normalizedChain) {
     const filteredChain = filterDisabledProviderModels(normalizedChain, disabled)
     if (filteredChain.length !== normalizedChain.length) {
@@ -70,16 +132,17 @@ function applyToHolder(label: string, holder: ModelHolder, disabled: readonly st
 
   if (typeof holder.model === "string" && isProviderDisabled(holder.model, disabled)) {
     const replacement = findFirstAllowedReplacement(
-      normalizeFallbackModels(holder.fallback_models),
+      fallbackEntries(holder.fallback_models),
       disabled,
     )
     if (replacement) {
+      const replacementModel = typeof replacement === "string" ? replacement : replacement.model
       log(`[${HOOK_NAME}] Substituted primary model from fallback chain`, {
         label,
         from: holder.model,
-        to: replacement,
+        to: replacementModel,
       })
-      holder.model = replacement
+      holder.model = promoteFallbackSettings(holder, replacement, label)
     } else {
       // Surface to the user-facing config-error channel so this does not
       // hide as a runtime ProviderModelNotFoundError on first delegation.

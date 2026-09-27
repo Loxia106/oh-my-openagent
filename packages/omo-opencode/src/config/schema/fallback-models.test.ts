@@ -42,6 +42,26 @@ describe("FallbackModelsSchema", () => {
       expect(result.data).toEqual(fallbackModels)
     }
   })
+
+  test("preserves canonical request settings and legacy aliases", () => {
+    const input = [
+      {
+        model: "openai/gpt-5.6-sol",
+        max_tokens: 2468,
+        provider_options: { parallelToolCalls: false, textVerbosity: "high" },
+      },
+      {
+        model: "openai/gpt-5.6-luna",
+        maxTokens: 1357,
+        providerOptions: { store: false },
+      },
+    ]
+
+    const result = FallbackModelsSchema.safeParse(input)
+
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data).toEqual(input)
+  })
 })
 
 describe("OhMyOpenCodeConfigSchema fallback_models", () => {
@@ -117,6 +137,29 @@ describe("OhMyOpenCodeConfigSchema fallback_models", () => {
     expect(result.success).toBe(true)
     if (result.success) {
       expect(result.data.categories?.deep?.fallback_models).toEqual(config.categories.deep.fallback_models)
+    }
+  })
+
+  test("accepts canonical rich entries in agent and category model chains", () => {
+    const config = {
+      agents: {
+        explore: {
+          models: [{ model: "openai/gpt-5.6-sol", max_tokens: 2468, provider_options: { parallelToolCalls: false } }],
+        },
+      },
+      categories: {
+        deep: {
+          models: [{ model: "openai/gpt-5.6-sol", max_tokens: 3579, provider_options: { textVerbosity: "high" } }],
+        },
+      },
+    }
+
+    const result = OhMyOpenCodeConfigSchema.safeParse(config)
+
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.agents?.explore?.models).toEqual(config.agents.explore.models)
+      expect(result.data.categories?.deep?.models).toEqual(config.categories.deep.models)
     }
   })
 })

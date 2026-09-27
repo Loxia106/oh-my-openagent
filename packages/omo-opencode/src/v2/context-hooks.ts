@@ -10,6 +10,7 @@ import {
 } from "../hooks/keyword-detector/constants"
 import { isSystemDirective, removeSystemReminders } from "../shared/system-directive"
 import { log } from "../shared/logger"
+import { createV2DelegationSettings, isV2DelegationSessionInLocation } from "./delegation-settings"
 
 const SESSION_STATE_LIMIT = 256
 const STOP_CONTINUATION_COMMAND = /^\s*\/stop-continuation(?:\s|$)/i
@@ -101,6 +102,7 @@ function applyDisabledTools(input: SessionContext, config: OhMyOpenCodeConfig): 
 export async function registerV2ContextHooks(ctx: Plugin.Context, config: OhMyOpenCodeConfig): Promise<() => Promise<void>> {
 	const modes = new Map<string, ContextMode>()
 	const loggedSettingsErrors = new Set<string>()
+	const delegationSettings = createV2DelegationSettings(ctx.storage, ctx.location)
 	const keywordDetectorEnabled = !config.disabled_hooks?.includes("keyword-detector")
 	// OpenCode 2 has no OMO team manager yet. Names from an external plugin do
 	// not prove the lifecycle semantics required by TEAM_MESSAGE.
@@ -154,6 +156,30 @@ export async function registerV2ContextHooks(ctx: Plugin.Context, config: OhMyOp
 			if (!loggedSettingsErrors.has(agent)) {
 				loggedSettingsErrors.add(agent)
 				log(`[v2 context] Could not apply native request settings for ${agent}: ${error instanceof Error ? error.message : String(error)}`)
+			}
+		}
+		const session = await ctx.session.get({ sessionID: input.sessionID })
+		if (session.parentID && session.agent === agent && isV2DelegationSessionInLocation(session, ctx.location) &&
+			typeof input.model.providerID === "string" && typeof input.model.id === "string") {
+			let stored
+			try {
+				stored = await delegationSettings.read(input.sessionID, {
+					parentSessionID: session.parentID,
+					agentID: agent,
+					model: {
+						providerID: input.model.providerID,
+						id: input.model.id,
+						...(input.model.variant ? { variant: input.model.variant } : {}),
+					},
+				})
+			} catch (error) {
+				throw new Error(`Could not read durable delegated model settings for ${input.sessionID}; refusing to send a request with downgraded settings.`, { cause: error })
+			}
+			if (stored) {
+				for (const [key, value] of Object.entries(stored.settings)) {
+					if (key === "reasoningEffort" && value === null) delete input.options[key]
+					else input.options[key] = value
+				}
 			}
 		}
 		// Request settings belong to the selected native agent, including host

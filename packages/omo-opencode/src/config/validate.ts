@@ -22,6 +22,21 @@ type LoadedConfigView = {
   readonly path: string
 }
 
+function asThinkingConfig(value: unknown): { type: "enabled" | "disabled"; budgetTokens?: number } | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+  const entry = value as Record<string, unknown>
+  if (entry.type !== "enabled" && entry.type !== "disabled") return undefined
+  if (entry.budgetTokens !== undefined && typeof entry.budgetTokens !== "number") return undefined
+  return {
+    type: entry.type,
+    ...(typeof entry.budgetTokens === "number" ? { budgetTokens: entry.budgetTokens } : {}),
+  }
+}
+
+function asTextVerbosity(value: unknown): "low" | "medium" | "high" | undefined {
+  return value === "low" || value === "medium" || value === "high" ? value : undefined
+}
+
 function shortPath(configPath: string): string {
   const candidate = relative(process.cwd(), configPath)
   return candidate.length > 0 ? candidate : configPath
@@ -107,24 +122,56 @@ function materializeAgentModelChains(config: OhMyOpenCodeConfig): OhMyOpenCodeCo
       models: _models,
       model: _model,
       fallback_models: _fallbackModels,
-      reasoning: _reasoning,
-      variant: _variant,
-      reasoningEffort: _reasoningEffort,
-      temperature: _temperature,
-      top_p: _topP,
-      maxTokens: _maxTokens,
-      thinking: _thinking,
+      reasoning,
+      variant,
+      reasoningEffort,
+      temperature,
+      top_p,
+      maxTokens,
+      providerOptions,
+      thinking,
+      textVerbosity,
       ...rest
     } = agent
-    const primarySettings = primary === undefined
-      ? {}
-      : typeof primary === "string"
-        ? { model: primary }
-        : primary
+    const primaryEntry = typeof primary === "object" ? primary : undefined
+    const {
+      max_tokens: primaryCanonicalMaxTokens,
+      maxTokens: primaryLegacyMaxTokens,
+      provider_options: primaryCanonicalProviderOptions,
+      providerOptions: primaryLegacyProviderOptions,
+    } = primaryEntry ?? {}
+    const {
+      max_tokens: _primaryMaxTokens,
+      maxTokens: _primaryLegacyMaxTokens,
+      provider_options: _primaryProviderOptions,
+      providerOptions: _primaryLegacyProviderOptions,
+      thinking: _primaryThinking,
+      textVerbosity: _primaryTextVerbosity,
+      ...primaryAgentFields
+    } = primaryEntry ?? {}
+    const resolvedProviderOptions = {
+      ...(providerOptions ?? {}),
+      ...(primaryLegacyProviderOptions ?? {}),
+      ...(primaryCanonicalProviderOptions ?? {}),
+    }
+    const resolvedMaxTokens = primaryCanonicalMaxTokens ?? primaryLegacyMaxTokens ?? maxTokens
+    const resolvedThinking = asThinkingConfig(resolvedProviderOptions.thinking) ?? primaryEntry?.thinking ?? thinking
+    const resolvedTextVerbosity = asTextVerbosity(resolvedProviderOptions.textVerbosity) ?? primaryEntry?.textVerbosity ?? textVerbosity
     changed = true
     return [name, {
       ...rest,
-      ...primarySettings,
+      ...(reasoning !== undefined ? { reasoning } : {}),
+      ...(variant !== undefined ? { variant } : {}),
+      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+      ...(temperature !== undefined ? { temperature } : {}),
+      ...(top_p !== undefined ? { top_p } : {}),
+      ...(resolvedThinking !== undefined ? { thinking: resolvedThinking } : {}),
+      ...(resolvedTextVerbosity !== undefined ? { textVerbosity: resolvedTextVerbosity } : {}),
+      ...(typeof primary === "string" ? { model: primary } : primaryAgentFields),
+      ...(resolvedMaxTokens !== undefined ? { maxTokens: resolvedMaxTokens } : {}),
+      ...(Object.keys(resolvedProviderOptions).length > 0 || providerOptions !== undefined || primaryLegacyProviderOptions !== undefined || primaryCanonicalProviderOptions !== undefined
+        ? { providerOptions: resolvedProviderOptions }
+        : {}),
       fallback_models: fallbacks,
     }]
   })) as typeof config.agents

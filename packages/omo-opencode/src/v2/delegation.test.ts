@@ -71,7 +71,7 @@ function abortableEvents({ signal }: { signal: AbortSignal }): AsyncIterable<nev
 
 type HarnessOptions = {
   config?: Record<string, unknown>
-  models?: Array<{ id: string; providerID: string; enabled: boolean; variants?: Array<{ id: string }> }>
+  models?: Array<{ id: string; providerID: string; enabled: boolean; variants?: Array<{ id: string; settings?: Record<string, unknown> }> }>
   parentModel?: { providerID: string; id: string; variant?: string }
   runState?: ReturnType<typeof createV2SubagentRunState>
   nativeExecute?: RegisteredTool["execute"]
@@ -614,6 +614,58 @@ describe("native V2 delegation", () => {
     }
   })
 
+  test("uses the rich category choice and persists it before native progress is forwarded", async () => {
+    const instance = await harness({
+      config: {
+        categories: {
+          deep: {
+            models: [{ model: "openai/selected", reasoning: "high", temperature: 0.71, top_p: 0.88, maxTokens: 2400 }],
+          },
+        },
+      },
+      models: [{
+        id: "selected", providerID: "openai", enabled: true,
+        variants: [{ id: "high", settings: { reasoningEffort: "high", parallelToolCalls: false } }],
+      }],
+    })
+    const context = toolContext()
+    context.progress = async () => {
+      const stored = [...instance.storage.values.values()].find((value: any) => value?.agentID === "sisyphus-junior" && value?.sessionID === "ses-child-1") as any
+      expect(stored?.settings).toMatchObject({
+        reasoningEffort: "high", parallelToolCalls: false, temperature: 0.71, topP: 0.88, maxTokens: 2400,
+      })
+    }
+    try {
+      await instance.editor.get("task")!.execute({ category: "deep", prompt: "Inspect" }, context)
+      expect(instance.nativeCalls.at(-1)).toMatchObject({ agent: "sisyphus-junior", model: "openai/selected#high" })
+    } finally {
+      await instance.runtime.cleanup()
+    }
+  })
+
+  test("an explicit category variant overrides a fallback entry variant", async () => {
+    const instance = await harness({
+      config: {
+        categories: {
+          deep: {
+            variant: "medium",
+            models: [{ model: "openai/selected", variant: "high" }],
+          },
+        },
+      },
+      models: [{
+        id: "selected", providerID: "openai", enabled: true,
+        variants: [{ id: "high" }, { id: "medium" }],
+      }],
+    })
+    try {
+      await instance.editor.get("task")!.execute({ category: "deep", prompt: "Inspect" }, toolContext())
+      expect(instance.nativeCalls.at(-1)).toMatchObject({ model: "openai/selected#medium" })
+    } finally {
+      await instance.runtime.cleanup()
+    }
+  })
+
   test("skips a disabled provider within a multi-provider model requirement", async () => {
     const instance = await harness({
       config: { disabled_providers: [" OPENAI "] },
@@ -640,7 +692,24 @@ describe("native V2 delegation", () => {
     })
     try {
       await expect(instance.editor.get("task")!.execute({ category: "blocked_only", prompt: "Inspect" }, toolContext()))
-        .rejects.toThrow("only uses providers listed in disabled_providers")
+        .rejects.toThrow("No available model")
+      expect(instance.nativeCalls).toHaveLength(0)
+    } finally {
+      await instance.runtime.cleanup()
+    }
+  })
+
+  test("does not replace an unavailable explicit category chain with an unrelated registered or default model", async () => {
+    const instance = await harness({
+      config: { categories: { unavailable: { models: ["missing/not-connected"] } } },
+      models: [
+        { id: "default-model", providerID: "provider", enabled: true },
+        { id: "unrelated", providerID: "openai", enabled: true },
+      ],
+    })
+    try {
+      await expect(instance.editor.get("task")!.execute({ category: "unavailable", prompt: "Inspect" }, toolContext()))
+        .rejects.toThrow("No available model")
       expect(instance.nativeCalls).toHaveLength(0)
     } finally {
       await instance.runtime.cleanup()
