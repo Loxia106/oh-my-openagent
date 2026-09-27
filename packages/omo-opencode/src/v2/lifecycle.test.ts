@@ -786,6 +786,86 @@ describe("native v2 lifecycle hooks", () => {
 		await cleanup()
 	})
 
+	test("compaction preserves delegated task_ids, reviewer verdicts and final-wave state, then re-injects them after compaction", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "omo-v2-lifecycle-compaction-"))
+		roots.push(directory)
+		const parentID = "ses-compaction-parent"
+		const workerID = "ses-compaction-worker"
+		const reviewerID = "ses-compaction-reviewer"
+		const { ctx, callbacks, setSessionGet, setSessionContext } = makeContext(directory)
+		setSessionGet(async (sessionID) => sessionID === workerID
+			? { parentID, agent: "sisyphus-junior", title: "Implement the parser change", outcome: "succeeded", location: { directory }, projectID: "project-main" }
+			: sessionID === reviewerID
+				? { parentID, agent: "oracle", title: "Review the parser change", outcome: "succeeded", location: { directory }, projectID: "project-main" }
+				: { agent: "sisyphus", outcome: "succeeded", location: { directory }, projectID: "project-main" })
+		setSessionContext([{ type: "assistant", content: [{ type: "text", text: "VERDICT: REJECT - missing regression test for empty input" }] }])
+		const runs = getV2SubagentRunState(ctx.storage)
+		await runs.recordLaunch(workerID, { parentSessionID: parentID, startedAt: 1, status: "completed", blockedActions: [] })
+		await runs.recordLaunch(reviewerID, { parentSessionID: parentID, startedAt: 2, status: "completed", blockedActions: [] })
+		await getV2TodoState(ctx.storage).write(parentID, [{ content: "Add the empty-input regression test", status: "in_progress" }])
+		const policies = await createV2WorkflowPolicyStore(ctx)
+		await policies.update(parentID, (current) => ({ ...current, finalWave: { workID: "w", planPath: "/plan.md", status: "reject", expected: 2, approvedTaskKeys: [] } }))
+		const cleanup = await registerV2LifecycleHooks(ctx, { disabled_hooks: ["goal", "atlas", "todo-continuation-enforcer"] } as OhMyOpenCodeConfig)
+
+		const compaction = { sessionID: parentID, system: [] as Array<{ type: "text"; text: string }>, messages: [] }
+		await callbacks.get("compaction")!(compaction)
+		const compactionText = compaction.system.map((part) => part.text).join("\n")
+		expect(compactionText).toContain("<omo_compaction_guidance>")
+		expect(compactionText).toContain("RESUME, DON'T RESTART")
+		expect(compactionText).toContain(`task_id: \`${workerID}\``)
+		expect(compactionText).toContain(`task_id: \`${reviewerID}\``)
+		expect(compactionText).toContain("Implement the parser change")
+		expect(compactionText).toContain("VERDICT: REJECT - missing regression test for empty input")
+		expect(compactionText).toContain('<final_wave_review plan="/plan.md" status="reject"')
+		expect(compactionText).toContain("Add the empty-input regression test")
+		expect(compactionText).toContain("<current_agent>sisyphus</current_agent>")
+
+		const ordinary = { sessionID: parentID, system: [] as Array<{ type: "text"; text: string }>, messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }] }
+		await callbacks.get("context")!(ordinary)
+		expect(ordinary.system).toEqual([])
+
+		const compacted = {
+			sessionID: parentID,
+			system: [] as Array<{ type: "text"; text: string }>,
+			messages: [{ role: "user", content: [{ type: "text", text: "<conversation-checkpoint>\nThe following is a summary" }] }, { role: "user", content: "next" }],
+		}
+		await callbacks.get("context")!(compacted)
+		const postText = compacted.system.map((part) => part.text).join("\n")
+		expect(postText).toContain("<omo_post_compaction_state>")
+		expect(postText).toContain(`task_id: \`${workerID}\``)
+		expect(postText).toContain("VERDICT: REJECT")
+		expect(postText).not.toContain("<omo_compaction_guidance>")
+		await callbacks.get("context")!(compacted)
+		expect(compacted.system).toHaveLength(1)
+
+		const provider = { sessionID: parentID, system: [] as Array<{ type: "text"; text: string }>, messages: [{ role: "assistant", content: [{ type: "compaction", text: "opaque" }] }] }
+		await callbacks.get("context")!(provider)
+		expect(provider.system).toHaveLength(1)
+		await cleanup()
+		await policies.dispose()
+	})
+
+	test("compaction context omits OMO state when both compaction hooks are disabled and keeps children out of other parents", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "omo-v2-lifecycle-compaction-off-"))
+		roots.push(directory)
+		const { ctx, callbacks, setSessionGet } = makeContext(directory)
+		setSessionGet(async (sessionID) => sessionID === "ses-foreign-child"
+			? { parentID: "ses-other-parent", agent: "explore", location: { directory }, projectID: "project-main" }
+			: { agent: "sisyphus", location: { directory }, projectID: "project-main" })
+		await getV2SubagentRunState(ctx.storage).recordLaunch("ses-foreign-child", { parentSessionID: "ses-parent", startedAt: 1, status: "running", blockedActions: [] })
+		const cleanup = await registerV2LifecycleHooks(ctx, { disabled_hooks: ["goal", "atlas", "todo-continuation-enforcer"] } as OhMyOpenCodeConfig)
+		const compaction = { sessionID: "ses-parent", system: [] as Array<{ type: "text"; text: string }>, messages: [] }
+		await callbacks.get("compaction")!(compaction)
+		expect(compaction.system.map((part) => part.text).join("\n")).not.toContain("ses-foreign-child")
+		await cleanup()
+
+		const disabled = makeContext(directory)
+		const cleanupDisabled = await registerV2LifecycleHooks(disabled.ctx, { disabled_hooks: ["goal", "atlas", "todo-continuation-enforcer", "compaction-context-injector", "compaction-todo-preserver"] } as OhMyOpenCodeConfig)
+		expect(disabled.callbacks.has("compaction")).toBe(false)
+		expect(disabled.callbacks.has("context")).toBe(false)
+		await cleanupDisabled()
+	})
+
 	test("unwinds earlier lifecycle registrations when compaction-hook registration fails", async () => {
 		const directory = await mkdtemp(join(tmpdir(), "omo-v2-lifecycle-test-"))
 		roots.push(directory)

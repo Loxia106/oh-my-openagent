@@ -16,6 +16,7 @@ import { registerV2ThinkModeHook } from "./think-mode"
 import { registerV2ClaudeHooks } from "./claude-hooks"
 import { registerV2RuntimeFallback } from "./runtime-fallback"
 import type { VerifiedLogicalParentResolver } from "./background-admission"
+import { registerV2CompactionModelOverride, registerV2CompactionOverflowGuard, registerV2PreemptiveCompaction, registerV2ToolOutputTruncator } from "./long-conversation"
 
 async function unwind(cleanups: Array<() => Promise<void>>): Promise<unknown[]> {
 	const errors: unknown[] = []
@@ -50,6 +51,9 @@ export async function registerV2Hooks(ctx: Plugin.Context, config: OhMyOpenCodeC
 		cleanups.push(await registerV2SafetyHooks(ctx, config))
 		cleanups.push(await registerV2InstructionHooks(ctx, config))
 		cleanups.push(await registerV2RecoveryHooks(ctx, config))
+		// Output-rewriting hooks above append guidance; bound the final model-visible result last.
+		cleanups.push(await registerV2ToolOutputTruncator(ctx, config))
+		cleanups.push(await registerV2PreemptiveCompaction(ctx, config))
 		const backgroundToolPolicy = await registerV2BackgroundToolPolicy(ctx, config, getV2SubagentRunState(ctx.storage), options.resolveLogicalParent)
 		cleanups.push(() => backgroundToolPolicy.cleanup())
 		cleanups.push(await registerV2LifecycleHooks(ctx, config, {
@@ -58,6 +62,9 @@ export async function registerV2Hooks(ctx: Plugin.Context, config: OhMyOpenCodeC
 				? undefined : claudeHooks.beforeContinuation,
 			onSessionDeleted: (sessionID) => backgroundToolPolicy.forget(sessionID),
 		}))
+		// Runs after the Claude PreCompact and OMO compaction-context hooks have extended the request.
+		cleanups.push(await registerV2CompactionOverflowGuard(ctx, config))
+		cleanups.push(await registerV2CompactionModelOverride(ctx, config))
 		// Pending recovery can resume a session immediately. Install the workflow
 		// coordinator and its durable stop store before restoring those deliveries.
 		cleanups.push(await registerV2RuntimeFallback(ctx, config, {
