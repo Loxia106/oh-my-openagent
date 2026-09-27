@@ -7,6 +7,7 @@ import { registerV2Delegation } from "./delegation"
 import { getV2SubagentRunState, getV2TodoState } from "./task-state"
 import { addV2FilesystemTools } from "./tool-filesystem"
 import { addV2SessionTools } from "./tool-session"
+import { registerV2SessionIndex } from "./session-index"
 import { addV2TaskSystemTools } from "./tool-task"
 import { addV2GoalTools } from "./tool-goal"
 import { registerV2DisabledToolGuard } from "./tool-disabled-guard"
@@ -99,7 +100,9 @@ export async function registerV2Tools(
 	let disabledToolGuard: (() => Promise<void>) | undefined
 	let teamTools: Awaited<ReturnType<typeof ctx.tool.transform>> | undefined
 	let interactiveBash: (() => Promise<void>) | undefined
+	let sessionIndex: (() => Promise<void>) | undefined
 	try {
+		sessionIndex = await registerV2SessionIndex(ctx)
 		skillMcp = await registerV2SkillMcpRuntime(ctx, config)
 		toolRegistration = await ctx.tool.transform((editor) => addNativeTools(editor, ctx, config, skillMcp))
 		delegation = await registerV2Delegation(ctx, config, getV2SubagentRunState(ctx.storage), {
@@ -120,6 +123,7 @@ export async function registerV2Tools(
 		if (teamTools) cleanups.push(() => teamTools!.dispose())
 		if (interactiveBash) cleanups.push(interactiveBash)
     if (disabledToolGuard) cleanups.push(disabledToolGuard)
+    if (sessionIndex) cleanups.unshift(sessionIndex)
     try {
       await disposeV2ToolRegistrations(cleanups)
     } catch (cleanupError) {
@@ -141,6 +145,7 @@ export async function registerV2Tools(
 		if (teamTools) cleanups.push(() => teamTools!.dispose())
 		if (interactiveBash) cleanups.push(interactiveBash)
 		cleanups.push(async () => disabledToolGuard?.())
+		if (sessionIndex) cleanups.unshift(sessionIndex)
 		await disposeV2ToolRegistrations(cleanups)
 	}
 	return {

@@ -3,6 +3,7 @@ import { Error as ToolError, type ToolEditor } from "@opencode/plugin/promise/to
 import { z } from "zod"
 import type { OhMyOpenCodeConfig } from "../config"
 import { readSessionHistory } from "./session-history"
+import { getV2SessionIndex } from "./session-index"
 import type { V2SubagentRunState, V2TodoState } from "./task-state"
 import { addV2Tool } from "./tool-adapter"
 
@@ -21,6 +22,8 @@ const sessionSearchInput = z.object({
   case_sensitive: z.boolean().optional(),
   limit: z.number().int().positive().optional(),
 })
+const SEARCH_SESSION_LIMIT = 100
+
 const sessionListInput = z.object({
   limit: z.number().int().positive().optional(),
   from_date: z.string().optional(),
@@ -33,6 +36,7 @@ async function getReadableSession(ctx: Plugin.Context, parentSessionID: string, 
   // the public host API; ownership is required only for resume/cancel operations.
   const session = await ctx.session.get({ sessionID: targetSessionID })
   await runs.observe(parentSessionID, targetSessionID)
+  await getV2SessionIndex(ctx).upsert(session).catch(() => undefined)
   return session
 }
 
@@ -40,7 +44,17 @@ function disabled(config: OhMyOpenCodeConfig, tool: string): boolean {
   return config.disabled_tools?.some((entry) => entry.trim().toLowerCase() === tool) ?? false
 }
 
-/** Inspection is limited to the current session and children created through native delegation. */
+/** Current, child, observed and OMO-indexed sessions of this project, newest first, without duplicates. */
+async function projectSessionIDs(ctx: Plugin.Context, sessionID: string, runs: V2SubagentRunState, limit?: number): Promise<string[]> {
+  const indexed = (await getV2SessionIndex(ctx).list().catch(() => [])).map((record) => record.id)
+  const ids = [...new Set([sessionID, ...await runs.children(sessionID), ...await runs.observed(sessionID), ...indexed])]
+  return limit === undefined ? ids : ids.slice(0, limit)
+}
+
+/**
+ * Session tools read explicit session IDs through the native API and enumerate this project's sessions
+ * from the durable OMO session index (sessions observed while OMO is active).
+ */
 export function addV2SessionTools(
   editor: ToolEditor,
   ctx: Plugin.Context,
@@ -51,7 +65,7 @@ export function addV2SessionTools(
   if (!disabled(config, "session_read")) {
     addV2Tool(editor, {
       name: "session_read",
-      description: "Read the current or explicitly identified historical session transcript. Global project session enumeration is unavailable in the native plugin API.",
+      description: "Read the current or an explicitly identified historical session transcript. Use session_list to find this project's sessions.",
       input: sessionReadInput,
       options: { codemode: false },
       execute: async (args, context) => {
@@ -76,7 +90,7 @@ export function addV2SessionTools(
   if (!disabled(config, "session_info")) {
     addV2Tool(editor, {
       name: "session_info",
-      description: "Inspect the current or explicitly identified historical session. Global project session enumeration is unavailable in the native plugin API.",
+      description: "Inspect the current or an explicitly identified historical session. Use session_list to find this project's sessions.",
       input: sessionInfoInput,
       options: { codemode: false },
       execute: async (args, context) => {
@@ -106,13 +120,13 @@ export function addV2SessionTools(
   if (!disabled(config, "session_search")) {
     addV2Tool(editor, {
       name: "session_search",
-      description: "Search one specified session, or the current session and session IDs observed through this tool plus OMO child sessions. This is not a complete project-wide search.",
+      description: "Search one specified session, or this project's sessions (current, OMO children, and sessions indexed while OMO is active; newest 100).",
       input: sessionSearchInput,
       options: { codemode: false },
       execute: async (args, context) => {
         const ids = args.session_id
           ? [args.session_id]
-          : [context.sessionID, ...await runs.children(context.sessionID), ...await runs.observed(context.sessionID)]
+          : await projectSessionIDs(ctx, context.sessionID, runs, SEARCH_SESSION_LIMIT)
         const needle = args.case_sensitive ? args.query : args.query.toLocaleLowerCase()
         const limit = Math.min(args.limit ?? 20, 100)
         const hits: string[] = []
@@ -132,7 +146,7 @@ export function addV2SessionTools(
           }
           if (hits.length >= limit) break
         }
-        return { content: hits.length ? hits.join("\n") : "No matches found in the current session or its OMO children." }
+        return { content: hits.length ? hits.join("\n") : "No matches found in the searched project sessions." }
       },
     })
   }
@@ -140,40 +154,48 @@ export function addV2SessionTools(
   if (!disabled(config, "session_list")) {
     addV2Tool(editor, {
       name: "session_list",
-      description: "List the current session, OMO child sessions, and historical sessions previously inspected through this tool. This observed-session index is not a complete project-wide listing.",
+      description: "List this project's sessions: the current session, OMO children, and sessions indexed while OMO is active (older sessions remain readable by explicit ID).",
       input: sessionListInput,
       options: { codemode: false },
       execute: async (args, context) => {
-        const ids = [context.sessionID, ...await runs.children(context.sessionID), ...await runs.observed(context.sessionID)]
+        const ids = await projectSessionIDs(ctx, context.sessionID, runs)
         const from = args.from_date ? Date.parse(args.from_date) : undefined
         const to = args.to_date ? Date.parse(args.to_date) : undefined
         if ((from !== undefined && !Number.isFinite(from)) || (to !== undefined && !Number.isFinite(to))) {
           throw new ToolError({ message: "from_date and to_date must be valid ISO-8601 dates." })
         }
-        const rows = []
-        for (const id of [...new Set(ids)]) {
+        const limit = Math.min(args.limit ?? 50, 100)
+        const candidates = []
+        for (const id of ids) {
           let session
           try {
-            session = await getReadableSession(ctx, context.sessionID, id, runs)
+            session = await ctx.session.get({ sessionID: id })
           } catch {
             continue
           }
+          if (String(session.projectID) !== String(ctx.location.project.id)) continue
           const created = session.time.created
           if (args.project_path && session.location.directory !== args.project_path) continue
           if (from !== undefined && created < from) continue
           if (to !== undefined && created > to) continue
-          const messages = await ctx.session.context({ sessionID: id })
+          candidates.push(session)
+        }
+        candidates.sort((left, right) => right.time.created - left.time.created)
+        const rows = []
+        for (const session of candidates.slice(0, limit)) {
+          const messages = await ctx.session.context({ sessionID: session.id })
           rows.push({
             id: session.id,
             parentID: session.parentID,
             title: session.title,
             agent: session.agent,
-            created: new Date(created).toISOString(),
+            directory: session.location.directory,
+            created: new Date(session.time.created).toISOString(),
             message_count: messages.length,
             outcome: session.outcome,
           })
         }
-        return { content: JSON.stringify(rows.slice(0, Math.min(args.limit ?? 50, 100)), null, 2) }
+        return { content: JSON.stringify(rows, null, 2) }
       },
     })
   }

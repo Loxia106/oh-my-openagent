@@ -21,6 +21,9 @@ function storage() {
     get: async (key: string) => values.get(key),
     set: async (key: string, value: unknown) => { values.set(key, value) },
     remove: async (key: string) => { values.delete(key) },
+    scan: async ({ prefix }: { prefix: string }) => ({
+      entries: [...values.entries()].filter(([key]) => key.startsWith(prefix)).sort(([left], [right]) => left.localeCompare(right)).map(([key, value]) => ({ key, value })),
+    }),
   }
 }
 
@@ -45,10 +48,12 @@ describe("native V2 session inspection tools", () => {
       agent: "sisyphus",
       model: { providerID: "openai", id: "gpt-6-sol" },
       location: { directory: "/repo" },
+      projectID: "proj",
       time: { created: 100, updated: 200, idle: 190 },
       outcome: "succeeded",
     })
     const ctx = {
+      location: { directory: "/repo", project: { id: "proj" } },
       session: {
         get: async ({ sessionID }: { sessionID: string }) => { calls.push(`get:${sessionID}`); return sessionInfo(sessionID) },
         context: async ({ sessionID }: { sessionID: string }) => [
@@ -85,4 +90,44 @@ describe("native V2 session inspection tools", () => {
       createV2SubagentRunState(ctx.storage), createV2TodoState(ctx.storage))
     expect(editor.list().map((tool) => tool.name)).toEqual(["session_info", "session_list"])
   })
+
+  test("lists and searches this project's indexed sessions without prior observation and excludes other projects", async () => {
+    const sessions: Record<string, Record<string, unknown>> = {
+      "ses-current": { id: "ses-current", projectID: "proj", location: { directory: "/repo" }, time: { created: 300, updated: 300 }, agent: "sisyphus" },
+      "ses-older": { id: "ses-older", projectID: "proj", title: "Earlier design discussion", location: { directory: "/repo" }, time: { created: 100, updated: 150 }, agent: "prometheus" },
+      "ses-foreign": { id: "ses-foreign", projectID: "other", location: { directory: "/elsewhere" }, time: { created: 200, updated: 200 }, agent: "sisyphus" },
+    }
+    const ctx = {
+      location: { directory: "/repo", project: { id: "proj" } },
+      session: {
+        get: async ({ sessionID }: { sessionID: string }) => {
+          const session = sessions[sessionID]
+          if (!session) throw new Error("missing")
+          return session
+        },
+        context: async ({ sessionID }: { sessionID: string }) => [
+          { id: `u-${sessionID}`, type: "user", text: sessionID === "ses-older" ? "Decide the CACHE_STRATEGY for the importer" : "hello" },
+        ],
+      },
+      storage: storage(),
+    } as unknown as Plugin.Context
+    const { getV2SessionIndex } = await import("./session-index")
+    const index = getV2SessionIndex(ctx)
+    await index.upsert(sessions["ses-older"] as never)
+    expect(await index.upsert(sessions["ses-foreign"] as never)).toBeUndefined()
+    const runs = createV2SubagentRunState(ctx.storage)
+    const editor = new TestEditor()
+    addV2SessionTools(editor as unknown as ToolEditor, ctx, {} as never, runs, createV2TodoState(ctx.storage))
+    const listed = JSON.parse((await editor.get("session_list")!.execute({}, toolContext())).content) as Array<{ id: string; title?: string }>
+    expect(listed.map((row) => row.id)).toEqual(["ses-current", "ses-older"])
+    expect(listed[1]!.title).toBe("Earlier design discussion")
+    const searched = await editor.get("session_search")!.execute({ query: "cache_strategy" }, toolContext())
+    expect(searched.content).toContain("[ses-older] user: Decide the CACHE_STRATEGY for the importer")
+    // A deleted native session drops out of the index and can no longer be read.
+    delete sessions["ses-older"]
+    await index.remove("ses-older")
+    const after = JSON.parse((await editor.get("session_list")!.execute({}, toolContext())).content) as Array<{ id: string }>
+    expect(after.map((row) => row.id)).toEqual(["ses-current"])
+  })
 })
+
