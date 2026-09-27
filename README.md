@@ -1,7 +1,7 @@
 > [!WARNING]
 > **Personal fork:** this branch ports the eleven built-in agents' conversation pipelines to the native OpenCode **2.0.18** API: prompts, skills, commands, delegation, review, and continuation. It is not an upstream Oh My OpenAgent release. Read the [pipeline verification](docs/opencode2-agent-pipelines.md) and [compatibility boundaries](docs/opencode2-compatibility.md). The upstream SUL-1.0 license and notices remain in force.
 >
-> To try this fork, clone its `codex/opencode2-compat` branch from `https://github.com/Loxia106/oh-my-openagent.git`, run `bun install --ignore-scripts --frozen-lockfile`, then choose a target with `bun run install:opencode2 -- --project <project-dir>` or `--config-dir <opencode-config-dir>`. The install command includes the build. Keep the source checkout and its `node_modules` in place; the configured plugin path is absolute and its bundle uses external SDK/UI packages plus staged file-backed assets. The upstream npm installation commands below do not install this fork. See the [agent pipeline verification](docs/opencode2-agent-pipelines.md) and [Korean setup guide](docs/opencode2-quickstart.ko.md).
+> To install this fork, follow [Install this fork on OpenCode 2.0.18](#install-this-fork-on-opencode-2018) below. The upstream npm installation commands do not install it.
 
 > [!NOTE]
 > **OmO 5.0: OmO ❤️ Pi**
@@ -102,6 +102,65 @@ Install oh-my-openagent. Type `ultrawork`. Done.
 
 
 ## Installation
+
+### Install this fork on OpenCode 2.0.18
+
+This branch is installed from source, not from npm. It targets OpenCode **2.0.18** (the native `@opencode/cli` package).
+
+**Requirements:** OpenCode 2.0.18, Git, [Bun](https://bun.sh) (built and verified with 1.4.2), and Node.js 20+ with npm (the first build installs the bundled LSP tool's dependencies).
+
+1. Install OpenCode 2.0.18 and check the version.
+
+   ```sh
+   npm install -g @opencode/cli@2.0.18
+   opencode --version   # opencode v2.0.18
+   ```
+
+2. Clone this branch and install its dependencies.
+
+   ```sh
+   git clone --branch codex/opencode2-compat https://github.com/Loxia106/oh-my-openagent.git
+   cd oh-my-openagent
+   bun install --ignore-scripts --frozen-lockfile
+   ```
+
+3. Build and register the plugin for one project, or for every project through an OpenCode config directory. Choose exactly one target; use absolute paths.
+
+   ```sh
+   bun run install:opencode2 -- --project /absolute/path/to/your/project
+   # or: bun run install:opencode2 -- --config-dir /absolute/path/to/opencode-config
+   ```
+
+   The command builds `dist/opencode2/`, adds its absolute path to `plugins` in that directory's `opencode.jsonc` (or existing `opencode.json`), and sets `default_agent` to `sisyphus` only when none is set. An existing config file is backed up before it is edited.
+
+4. Restart the OpenCode background service so it loads the plugin, then start OpenCode in the project.
+
+   ```sh
+   opencode service restart
+   opencode /absolute/path/to/your/project
+   ```
+
+   Sisyphus is the default agent; Hephaestus, Prometheus and Atlas are selectable as primary agents. Sign in to your model providers with `opencode auth` as usual; this installer does not configure providers or API keys.
+
+**Keep the checkout.** The registered path points into this clone, and the bundle loads SDK/UI packages from its `node_modules`. Do not delete or move the clone; if you move it, rerun step 3 from the new location.
+
+**Optional features** are enabled in the project's `.omo/omo.jsonc` under `"[opencode]"`, for example `team_mode.enabled` for Team/Hyperplan, `goal.enabled` for `/goal`, `experimental.preemptive_compaction`, `runtime_fallback` and `hashline_edit`. See the [Korean setup guide](docs/opencode2-quickstart.ko.md) for the full list and the [compatibility matrix](docs/opencode2-compatibility.md) for each option's behavior.
+
+**Update:**
+
+```sh
+cd oh-my-openagent
+git pull --ff-only
+bun install --ignore-scripts --frozen-lockfile
+bun run install:opencode2 -- --project /absolute/path/to/your/project
+opencode service restart
+```
+
+**Uninstall:** remove the `.../oh-my-openagent/dist/opencode2` entry from `plugins` (and `default_agent` if the installer added it) in the `opencode.jsonc` you targeted, run `opencode service restart`, then delete the clone.
+
+What was verified, and what differs from the OpenCode 1.x plugin, is in the [agent pipeline verification](docs/opencode2-agent-pipelines.md) and [compatibility matrix](docs/opencode2-compatibility.md).
+
+### Upstream editions
 
 oh-my-openagent ships in three editions of the same product: two plugins that load into a host you already run, plus one standalone edition.
 

@@ -1,3 +1,6 @@
+> [!WARNING]
+> **OpenCode 2 个人分支：** 此分支将 11 个内置智能体的对话流水线移植到 OpenCode **2.0.18** 原生 API，并非官方发布版本。npm 安装命令不会安装此分支。安装步骤请参阅[英文 README 的安装章节](README.md#install-this-fork-on-opencode-2018)。
+
 > [!NOTE]
 > **OmO 测试版: OmO ❤️ Pi**
 > 使用 `bun add -g omo-ai` 安装。记忆系统、CodeMode、Anthropic 订阅,全部支持。

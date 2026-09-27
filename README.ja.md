@@ -1,3 +1,6 @@
+> [!WARNING]
+> **OpenCode 2 個人フォーク:** このブランチは 11 個の組み込みエージェントの会話パイプラインを OpenCode **2.0.18** のネイティブ API に移植したもので、公式リリースではありません。npm のインストールコマンドではインストールされません。手順は [英語 README のインストール節](README.md#install-this-fork-on-opencode-2018) を参照してください。
+
 > [!NOTE]
 > **OmO ベータ: OmO ❤️ Pi**
 > `bun add -g omo-ai` でインストールしてください。メモリシステム、CodeMode、Anthropic サブスクリプションにすべて対応しています。

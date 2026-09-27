@@ -1,7 +1,7 @@
 > [!WARNING]
 > **OpenCode 2 개인 포크:** 11개 기본 에이전트의 프롬프트·스킬·명령·위임·검토·작업 재개를 OpenCode **2.0.18**의 네이티브 API로 이식한 브랜치입니다. 공식 Oh My OpenAgent 릴리스는 아닙니다. [파이프라인 검증 결과](docs/opencode2-agent-pipelines.md)와 [기존 기능과의 차이](docs/opencode2-compatibility.md)를 확인하세요. 기존 SUL-1.0 라이선스와 고지는 그대로 적용됩니다.
 >
-> [한국어 설치·실행 안내](docs/opencode2-quickstart.ko.md)를 따라 `codex/opencode2-compat` 브랜치를 복제하고 `bun install --ignore-scripts --frozen-lockfile`을 실행합니다. 적용할 프로젝트를 지정해 `bun run install:opencode2 -- --project <프로젝트 경로>`를 실행하거나 `--config-dir <OpenCode 설정 경로>`를 사용하세요. 설치 명령에 빌드가 포함됩니다. 플러그인은 절대 경로로 등록되므로 복제한 저장소와 `node_modules`를 유지해야 합니다. 아래의 기존 npm 설치 명령으로는 이 포크가 설치되지 않습니다.
+> 설치는 아래 [OpenCode 2.0.18에 이 포크 설치하기](#opencode-2018에-이-포크-설치하기)를 따르세요. 기존 npm 설치 명령으로는 이 포크가 설치되지 않습니다.
 
 > [!NOTE]
 > **OmO 베타: OmO ❤️ Pi**
@@ -107,6 +107,65 @@ oh-my-openagent를 설치하세요. `ultrawork`를 입력하세요. 끝.
 
 
 ## 설치
+
+### OpenCode 2.0.18에 이 포크 설치하기
+
+이 브랜치는 npm이 아니라 소스에서 설치합니다. 대상은 OpenCode **2.0.18**(네이티브 `@opencode/cli` 패키지)입니다.
+
+**필요한 것:** OpenCode 2.0.18, Git, [Bun](https://bun.sh)(1.4.2로 빌드·검증), Node.js 20 이상과 npm(첫 빌드 때 포함된 LSP 도구의 의존성을 설치합니다).
+
+1. OpenCode 2.0.18을 설치하고 버전을 확인합니다.
+
+   ```sh
+   npm install -g @opencode/cli@2.0.18
+   opencode --version   # opencode v2.0.18
+   ```
+
+2. 이 브랜치를 복제하고 의존성을 설치합니다.
+
+   ```sh
+   git clone --branch codex/opencode2-compat https://github.com/Loxia106/oh-my-openagent.git
+   cd oh-my-openagent
+   bun install --ignore-scripts --frozen-lockfile
+   ```
+
+3. 플러그인을 빌드하고 등록합니다. 한 프로젝트에만 적용하려면 `--project`를, 모든 프로젝트에 적용하려면 OpenCode 설정 디렉터리를 `--config-dir`로 지정합니다. 둘 중 하나만, 절대 경로로 지정합니다.
+
+   ```sh
+   bun run install:opencode2 -- --project /절대/경로/작업프로젝트
+   # 또는: bun run install:opencode2 -- --config-dir /절대/경로/opencode설정
+   ```
+
+   이 명령은 `dist/opencode2/`를 빌드하고, 해당 디렉터리의 `opencode.jsonc`(또는 기존 `opencode.json`)의 `plugins`에 그 절대 경로를 추가합니다. `default_agent`가 없을 때만 `sisyphus`로 설정합니다. 기존 설정 파일은 수정 전에 백업합니다.
+
+4. 플러그인을 불러오도록 OpenCode 백그라운드 서비스를 재시작하고 프로젝트에서 OpenCode를 실행합니다.
+
+   ```sh
+   opencode service restart
+   opencode /절대/경로/작업프로젝트
+   ```
+
+   기본 에이전트는 Sisyphus이며 Hephaestus, Prometheus, Atlas를 주 에이전트로 선택할 수 있습니다. 모델 공급자 로그인은 평소처럼 `opencode auth`로 합니다. 이 설치 명령은 공급자나 API 키를 설정하지 않습니다.
+
+**복제한 저장소를 유지하세요.** 등록된 경로가 이 저장소를 가리키고, 번들은 저장소의 `node_modules`에서 SDK/UI 패키지를 불러옵니다. 저장소를 지우거나 옮기면 안 되며, 옮겼다면 새 위치에서 3단계를 다시 실행합니다.
+
+**선택 기능**은 작업 프로젝트의 `.omo/omo.jsonc`의 `"[opencode]"` 아래에서 켭니다. 예: Team/Hyperplan은 `team_mode.enabled`, `/goal`은 `goal.enabled`, 그 밖에 `experimental.preemptive_compaction`, `runtime_fallback`, `hashline_edit` 등. 전체 목록은 [한국어 설치·실행 안내](docs/opencode2-quickstart.ko.md), 옵션별 동작은 [호환성 표](docs/opencode2-compatibility.md)를 참고하세요.
+
+**업데이트:**
+
+```sh
+cd oh-my-openagent
+git pull --ff-only
+bun install --ignore-scripts --frozen-lockfile
+bun run install:opencode2 -- --project /절대/경로/작업프로젝트
+opencode service restart
+```
+
+**제거:** 설치 대상 `opencode.jsonc`의 `plugins`에서 `.../oh-my-openagent/dist/opencode2` 항목을 지우고(설치 명령이 추가한 경우 `default_agent`도), `opencode service restart` 후 복제한 저장소를 삭제합니다.
+
+검증된 범위와 OpenCode 1.x 플러그인과의 차이는 [에이전트 파이프라인 검증](docs/opencode2-agent-pipelines.md)과 [호환성 표](docs/opencode2-compatibility.md)에 정리되어 있습니다.
+
+### 업스트림 배포판
 
 ### 사람을 위한 설치
 
