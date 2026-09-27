@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import type { Plugin } from "@opencode/plugin"
 import type { OhMyOpenCodeConfig } from "../config"
-import { registerV2RuntimeFallback } from "./runtime-fallback"
+import { normalizeV2FallbackConfig, registerV2RuntimeFallback, requirementFallbackModels } from "./runtime-fallback"
 
 type Callback = (input: never) => unknown
 type Model = { providerID: string; id: string; variant?: string }
@@ -17,6 +17,7 @@ function createHarness(options: {
 	readonly disableBackupAfterInitialLookup?: boolean
 	readonly logicalParent?: boolean
 	readonly stopped?: boolean
+	readonly extraModels?: readonly string[]
 } = {}) {
 	const directory = process.cwd()
 	const sessionID = "ses-runtime-fallback"
@@ -27,6 +28,7 @@ function createHarness(options: {
 	const storageValues = new Map<string, unknown>()
 	const modelSwitches: Model[] = []
 	const syntheticCalls: unknown[] = []
+	const interrupts: string[] = []
 	const events: Array<{ event: unknown; finish: () => void }> = []
 	let eventWake: (() => void) | undefined
 	let streamClosed = false
@@ -47,7 +49,7 @@ function createHarness(options: {
 		remove: async (key: string) => { storageValues.delete(key) },
 		scan: async () => ({ entries: [] as Array<{ key: string; value: unknown }>, next: undefined as string | undefined }),
 	}
-	const modelCatalog = [primary, backup].map((model) => ({
+	const modelCatalog = [primary, backup, ...(options.extraModels ?? []).map((id) => ({ providerID: "openai", id }))].map((model) => ({
 		...model,
 		enabled: options.enabledModels ? options.enabledModels.includes(model.id) : true,
 		variants: [],
@@ -70,6 +72,7 @@ function createHarness(options: {
 				currentSession.model = model
 			},
 			synthetic: async (input: unknown) => { syntheticCalls.push(input) },
+			interrupt: async ({ sessionID: requested }: { sessionID: string }) => { interrupts.push(requested) },
 			hook: async (name: string, callback: Callback) => {
 				callbacks.set(name, callback)
 				return { dispose: async () => { callbacks.delete(name) } }
@@ -123,6 +126,7 @@ function createHarness(options: {
 		storageValues,
 		modelSwitches,
 		syntheticCalls,
+		interrupts,
 		sessionID,
 		primary,
 		backup,
@@ -162,6 +166,7 @@ async function runFailure(options: {
 	readonly requestModel?: Model
 	readonly omitUserBeforeFailure?: boolean
 	readonly config?: OhMyOpenCodeConfig
+	readonly extraModels?: readonly string[]
 } = {}) {
 	const harness = createHarness(options)
 	const cleanup = await registerV2RuntimeFallback(harness.ctx, options.config ?? config, {
@@ -326,4 +331,85 @@ describe("native v2 runtime fallback", () => {
 			await cleanup()
 		}
 	})
+
+	test("legacy model_fallback mode recovers with the explicit chain and runtime_fallback takes precedence", async () => {
+		const modelConfig = { model_fallback: true, agents: { sisyphus: { fallback_models: ["openai/backup"] } } } as unknown as OhMyOpenCodeConfig
+		expect(normalizeV2FallbackConfig(modelConfig)).toMatchObject({ mode: "model", cooldown_seconds: 0 })
+		expect(normalizeV2FallbackConfig({ ...modelConfig, disabled_hooks: ["model-fallback"] } as unknown as OhMyOpenCodeConfig)).toBeUndefined()
+		expect(normalizeV2FallbackConfig({ ...config, model_fallback: true } as unknown as OhMyOpenCodeConfig)).toMatchObject({ mode: "runtime", timeout_ms: 30_000 })
+		const harness = await runFailure({ config: modelConfig, responseStatus: 529, errorType: "provider.overloaded", errorStatus: 529 })
+		expect(harness.modelSwitches).toEqual([{ providerID: "openai", id: "backup" }])
+		expect(harness.syntheticCalls).toHaveLength(1)
+		await harness.cleanup()
+		const runtimeOnly = await runFailure({ responseStatus: 529, errorType: "provider.overloaded", errorStatus: 529 })
+		expect(runtimeOnly.modelSwitches).toHaveLength(0)
+		await runtimeOnly.cleanup()
+	})
+
+	test("model_fallback derives the built-in agent requirement chain when no fallback_models are configured", async () => {
+		const chain = requirementFallbackModels("sisyphus")
+		expect(chain?.length).toBeGreaterThan(0)
+		expect(chain!.every((entry) => typeof entry.model === "string" && entry.model.includes("/"))).toBe(true)
+		expect(requirementFallbackModels("not-an-omo-agent")).toBeUndefined()
+		// None of the requirement providers exist in this catalog, so no model is invented.
+		const harness = await runFailure({ config: { model_fallback: true } as unknown as OhMyOpenCodeConfig })
+		expect(harness.modelSwitches).toHaveLength(0)
+		await harness.cleanup()
+	})
+
+	test("stops host retries early only when a verified primary request has a usable fallback", async () => {
+		const harness = createHarness()
+		const cleanup = await registerV2RuntimeFallback(harness.ctx, config)
+		const retry = harness.callbacks.get("retry")
+		expect(retry).toBeDefined()
+		await harness.callbacks.get("model.request")!({ sessionID: harness.sessionID, agent: "sisyphus", model: harness.primary, kind: "primary", headers: {} } as never)
+		await harness.callbacks.get("http.response")!({ sessionID: harness.sessionID, agent: "sisyphus", model: harness.primary, kind: "primary", request: new Request("http://localhost/m"), response: new Response(null, { status: 429 }) } as never)
+		const input = { sessionID: harness.sessionID, agent: "sisyphus", model: harness.primary, error: { type: "provider.rate-limit", status: 429, message: "slow down" }, attempt: 1, decision: { retry: true, delay: 1000 } }
+		await retry!(input as never)
+		expect(input.decision).toEqual({ retry: false })
+		const nonRetryable = { ...input, error: { type: "provider.invalid-request", status: 400, message: "bad" }, decision: { retry: true, delay: 1000 } }
+		await retry!(nonRetryable as never)
+		expect(nonRetryable.decision).toEqual({ retry: true, delay: 1000 })
+		await cleanup()
+
+		const noChain = createHarness()
+		const cleanupNoChain = await registerV2RuntimeFallback(noChain.ctx, { runtime_fallback: { enabled: true, retry_on_errors: [429] } } as unknown as OhMyOpenCodeConfig)
+		await noChain.callbacks.get("model.request")!({ sessionID: noChain.sessionID, agent: "sisyphus", model: noChain.primary, kind: "primary", headers: {} } as never)
+		await noChain.callbacks.get("http.response")!({ sessionID: noChain.sessionID, agent: "sisyphus", model: noChain.primary, kind: "primary", request: new Request("http://localhost/m"), response: new Response(null, { status: 429 }) } as never)
+		const kept = { ...input, decision: { retry: true, delay: 1000 } }
+		await noChain.callbacks.get("retry")!(kept as never)
+		expect(kept.decision).toEqual({ retry: true, delay: 1000 })
+		await cleanupNoChain()
+
+		const disabled = createHarness()
+		const cleanupDisabled = await registerV2RuntimeFallback(disabled.ctx, { ...config, runtime_fallback: { ...(config.runtime_fallback as object), timeout_seconds: 0 } } as unknown as OhMyOpenCodeConfig)
+		expect(disabled.callbacks.has("retry")).toBe(false)
+		await cleanupDisabled()
+	})
+
+	test("a silent fallback is interrupted after timeout_seconds and the next candidate continues the same request", async () => {
+		const timeoutConfig = {
+			runtime_fallback: { enabled: true, retry_on_errors: [429], max_fallback_attempts: 3, cooldown_seconds: 0, timeout_seconds: 0.05 },
+			agents: { sisyphus: { fallback_models: ["openai/backup", "openai/backup2"] } },
+		} as unknown as OhMyOpenCodeConfig
+		const harness = await runFailure({ config: timeoutConfig, extraModels: ["backup2"] })
+		expect(harness.modelSwitches).toEqual([{ providerID: "openai", id: "backup" }])
+		await new Promise((resolve) => setTimeout(resolve, 120))
+		expect(harness.interrupts).toEqual([harness.sessionID])
+		harness.currentSession.outcome = "interrupted"
+		await harness.emit({ id: "evt-int", type: "session.execution.interrupted", created: Date.now(), data: { sessionID: harness.sessionID } })
+		await new Promise((resolve) => setTimeout(resolve, 20))
+		expect(harness.modelSwitches).toEqual([{ providerID: "openai", id: "backup" }, { providerID: "openai", id: "backup2" }])
+		expect(harness.syntheticCalls).toHaveLength(2)
+		expect(harness.syntheticCalls[1]).toMatchObject({ resume: true, metadata: { omoRuntimeFallback: { reason: "timeout" } } })
+		expect(registeredFallbacks(harness.storageValues)[0]).toMatchObject({ phase: "active", currentModel: { id: "backup2" } })
+		await harness.cleanup()
+
+		const progressing = await runFailure({ config: timeoutConfig, extraModels: ["backup2"] })
+		await progressing.emit({ id: "evt-stream", type: "session.step.streamed", created: Date.now() + 5, data: { sessionID: progressing.sessionID } })
+		await new Promise((resolve) => setTimeout(resolve, 120))
+		expect(progressing.interrupts).toEqual([])
+		await progressing.cleanup()
+	})
 })
+

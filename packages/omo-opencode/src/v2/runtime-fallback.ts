@@ -3,10 +3,13 @@ import { realpathSync } from "node:fs"
 import { normalize, resolve } from "node:path"
 import type * as Schema from "effect/Schema"
 import type { Plugin } from "@opencode/plugin"
-import type { SessionContext, SessionHttpResponse, SessionModelRequest } from "@opencode/plugin/promise/session"
+import type { SessionContext, SessionHttpResponse, SessionModelRequest, SessionRetry } from "@opencode/plugin/promise/session"
 import type { OhMyOpenCodeConfig } from "../config"
 import type { AgentOverrideConfig, CategoryConfig, RuntimeFallbackConfig } from "../config/schema"
+import type { FallbackModelObject } from "../config/schema/fallback-models"
 import { mergeCategories } from "../shared/merge-categories"
+import { AGENT_MODEL_REQUIREMENTS, isRetryableModelError, transformModelForProvider } from "@oh-my-opencode/model-core"
+import { getAgentConfigKey } from "../shared/agent-display-names"
 import { log } from "../shared/logger"
 import { resolveV2DelegationFallbackCandidates, advanceV2DelegationFallback, delegationModelKey, type DelegationFallbackState, type DelegationModelChoice, type DelegationModelRef } from "./delegation-model-selection"
 import { isV2DelegationSessionInLocation } from "./delegation-settings"
@@ -241,7 +244,7 @@ function eventCreatedAt(event: unknown): number | undefined {
 function isRetryableProviderFailure(
 	error: unknown,
 	responseStatus: number | undefined,
-	retryOnErrors: readonly number[],
+	settings: FallbackSettings,
 ): boolean {
 	if (!isRecord(error) || typeof error.type !== "string" || !error.type.startsWith("provider.")) return false
 	const errorStatus = typeof error.status === "number" && Number.isSafeInteger(error.status) ? error.status : undefined
@@ -249,20 +252,46 @@ function isRetryableProviderFailure(
 	// Without it, a streamed/transport error cannot yet be distinguished from an
 	// unwrapped child/tool cause in the terminal session error.
 	if (responseStatus === undefined || responseStatus >= 200 && responseStatus < 300) return false
-	if (!retryOnErrors.includes(responseStatus)) return false
 	if (errorStatus !== undefined && errorStatus !== responseStatus) return false
-	return true
+	if (settings.retry_on_errors.includes(responseStatus)) return true
+	// Legacy `model_fallback` classifies by the shared model-error rules instead of a status list.
+	return settings.mode === "model" && isRetryableModelError({
+		name: typeof error.name === "string" ? error.name : undefined,
+		message: `${typeof error.message === "string" ? error.message : ""} (HTTP ${responseStatus})`,
+	})
 }
 
 function modelFromHook(model: SessionModelRequest["model"]): DelegationModelRef {
 	return { providerID: String(model.providerID), id: String(model.id), ...(model.variant ? { variant: String(model.variant) } : {}) }
 }
 
-function normalizeConfig(config: OhMyOpenCodeConfig): Required<Pick<RuntimeFallbackConfig, "retry_on_errors" | "max_fallback_attempts" | "cooldown_seconds">> | undefined {
+type FallbackSettings = Required<Pick<RuntimeFallbackConfig, "retry_on_errors" | "max_fallback_attempts" | "cooldown_seconds">> & {
+	/** `runtime`: explicit `runtime_fallback`; `model`: legacy `model_fallback` with built-in agent chains. */
+	readonly mode: "runtime" | "model"
+	/** Stop host retries early and watch fallback responses; 0 disables both (legacy `timeout_seconds`). */
+	readonly timeout_ms: number
+}
+
+const MODEL_FALLBACK_TIMEOUT_MS = 30_000
+
+export function normalizeV2FallbackConfig(config: OhMyOpenCodeConfig): FallbackSettings | undefined {
+	const runtime = normalizeRuntimeConfig(config)
+	if (runtime) return runtime
+	// The legacy event handler only runs model_fallback when runtime_fallback is off.
+	if (config.model_fallback !== true || config.disabled_hooks?.includes("model-fallback")) return undefined
+	return { mode: "model", retry_on_errors: [429, 500, 502, 503, 504, 529], max_fallback_attempts: 20, cooldown_seconds: 0, timeout_ms: MODEL_FALLBACK_TIMEOUT_MS }
+}
+
+function normalizeRuntimeConfig(config: OhMyOpenCodeConfig): FallbackSettings | undefined {
 	if (config.disabled_hooks?.includes("runtime-fallback")) return undefined
 	const raw = config.runtime_fallback
 	if (raw !== true && (!isRecord(raw) || raw.enabled !== true)) return undefined
+	const timeout = typeof raw === "object" && raw !== null && typeof raw.timeout_seconds === "number" && Number.isFinite(raw.timeout_seconds)
+		? Math.max(0, raw.timeout_seconds)
+		: 30
 	return {
+		mode: "runtime",
+		timeout_ms: timeout * 1000,
 		retry_on_errors: Array.isArray(raw === true ? undefined : raw.retry_on_errors)
 			? (raw as { retry_on_errors: number[] }).retry_on_errors.filter((item) => Number.isSafeInteger(item) && item >= 100 && item <= 599)
 			: [429, 500, 502, 503, 504],
@@ -297,13 +326,33 @@ function settingsForAgent(config: OhMyOpenCodeConfig, agentID: string): {
 	return { agent, agentCategory }
 }
 
+function hasExplicitFallback(configured: { agent?: AgentOverrideConfig; agentCategory?: CategoryConfig }): boolean {
+	const has = (value: unknown) => typeof value === "string" ? value.trim().length > 0 : Array.isArray(value) && value.length > 0
+	return has(configured.agent?.fallback_models) || has(configured.agentCategory?.fallback_models)
+}
+
+/** Legacy `model_fallback` chain: the agent's built-in requirement entries for every listed provider. */
+export function requirementFallbackModels(agentID: string): FallbackModelObject[] | undefined {
+	const requirement = AGENT_MODEL_REQUIREMENTS[getAgentConfigKey(agentID)]
+	if (!requirement?.fallbackChain.length) return undefined
+	return requirement.fallbackChain.flatMap((entry) => entry.providers.map((providerID) => ({
+		model: `${providerID}/${transformModelForProvider(providerID, entry.model)}`,
+		...(entry.variant ?? requirement.variant ? { variant: entry.variant ?? requirement.variant } : {}),
+		...(entry.reasoningEffort ? { reasoningEffort: entry.reasoningEffort as FallbackModelObject["reasoningEffort"] } : {}),
+		...(entry.temperature !== undefined ? { temperature: entry.temperature } : {}),
+		...(entry.top_p !== undefined ? { top_p: entry.top_p } : {}),
+		...(entry.maxTokens !== undefined ? { maxTokens: entry.maxTokens } : {}),
+		...(entry.thinking ? { thinking: entry.thinking } : {}),
+	})))
+}
+
 /** Register opt-in recovery only after a verified primary provider failure. */
 export async function registerV2RuntimeFallback(
 	ctx: Plugin.Context,
 	config: OhMyOpenCodeConfig,
 	options: V2RuntimeFallbackOptions = {},
 ): Promise<() => Promise<void>> {
-	const settings = normalizeConfig(config)
+	const settings = normalizeV2FallbackConfig(config)
 	if (!settings) return async () => undefined
 
 	const scopeID = scope(ctx)
@@ -316,7 +365,17 @@ export async function registerV2RuntimeFallback(
 	let modelRequestHook: Awaited<ReturnType<typeof ctx.session.hook>> | undefined
 	let httpResponseHook: Awaited<ReturnType<typeof ctx.session.hook>> | undefined
 	let contextHook: Awaited<ReturnType<typeof ctx.session.hook>> | undefined
+	let retryHook: Awaited<ReturnType<typeof ctx.session.hook>> | undefined
 	let eventTask: Promise<void> | undefined
+	type Watch = { readonly model: DelegationModelRef; readonly armedAt: number; timer?: ReturnType<typeof setTimeout>; fired: boolean }
+	const watches = new Map<string, Watch>()
+	const earlySwitch = settings.mode === "model" || settings.timeout_ms > 0
+	const watchdog = settings.mode === "runtime" && settings.timeout_ms > 0
+	const clearWatch = (sessionID: string) => {
+		const watch = watches.get(sessionID)
+		if (watch?.timer) clearTimeout(watch.timer)
+		watches.delete(sessionID)
+	}
 
 	const remember = (sessionID: string, entry: CacheEntry) => {
 		cache.delete(sessionID)
@@ -440,6 +499,9 @@ export async function registerV2RuntimeFallback(
 		const agent = agents.data.find((candidate) => candidate.id === agentID)
 		if (!agent || agent.mode === "subagent") return undefined
 		const configured = settingsForAgent(config, agentID)
+		const requirementChain = settings.mode === "model" && !hasExplicitFallback(configured)
+			? requirementFallbackModels(agentID)
+			: undefined
 		return resolveV2DelegationFallbackCandidates({
 			agentID,
 			catalog: models.data.map((model) => ({
@@ -449,7 +511,7 @@ export async function registerV2RuntimeFallback(
 				variants: model.variants.map((variant) => ({ id: variant.id, settings: variant.settings })),
 			})),
 			disabledProviders: config.disabled_providers,
-			agentConfig: configured.agent,
+			agentConfig: requirementChain ? { ...configured.agent, fallback_models: requirementChain } : configured.agent,
 			agentCategory: configured.agentCategory,
 			currentModel,
 		})
@@ -547,6 +609,74 @@ export async function registerV2RuntimeFallback(
 		}
 		if (!active) return
 		await writeState({ ...value, phase: "active", pendingFromModel: undefined, pendingFailedIdle: undefined, updatedAt: Date.now() })
+		armWatch(value.sessionID, target)
+	}
+
+	/**
+	 * Legacy `timeout_seconds`: a fallback attempt that produces no visible progress within the timeout
+	 * is interrupted and the session advances to the next configured model.
+	 */
+	const armWatch = (sessionID: string, model: DelegationModelRef) => {
+		if (!watchdog || !active) return
+		clearWatch(sessionID)
+		const watch: Watch = { model, armedAt: Date.now(), fired: false }
+		watch.timer = setTimeout(() => {
+			if (watches.get(sessionID) !== watch || !active) return
+			watch.fired = true
+			track(serialize(sessionID, async () => {
+				const state = await readStateOrEmpty(sessionID)
+				if (!active || watches.get(sessionID) !== watch || state.kind !== "valid" || state.value.phase !== "active" || !sameModel(state.value.currentModel, model)) return
+				if (await isStopped(sessionID)) return
+				log("[v2 runtime-fallback] Fallback model produced no progress before timeout_seconds; interrupting to advance.", { sessionID, model, timeoutMs: settings.timeout_ms })
+				await ctx.session.interrupt({ sessionID: sessionID as Parameters<Plugin.Context["session"]["interrupt"]>[0]["sessionID"] })
+			}).catch((error) => log("[v2 runtime-fallback] Timeout interruption failed.", { sessionID, error })))
+		}, settings.timeout_ms)
+		watches.set(sessionID, watch)
+	}
+
+	const advanceAfterTimeout = async (sessionID: string, watch: Watch): Promise<void> => {
+		const state = await readStateOrEmpty(sessionID)
+		if (!active || state.kind !== "valid" || state.value.phase !== "active" || !sameModel(state.value.currentModel, watch.model) || await isStopped(sessionID)) return
+		const value = state.value
+		const history = await latestHistory(sessionID)
+		if (!history || history.userMessageID !== value.userMessageID) return
+		const session = await isOwnedPrimary(sessionID, value.agentID, { userMessageID: value.userMessageID, models: [value.currentModel], requireAssistant: false })
+		if (!session || session.outcome !== "interrupted") return
+		const liveModel = await effectiveSessionModel(session, value.agentID)
+		if (!liveModel || !sameModel(liveModel, value.currentModel)) return
+		const next = advanceV2DelegationFallback(value.fallback, value.currentModel, {
+			now: Date.now(),
+			cooldownMs: settings.cooldown_seconds * 1000,
+			maxAttempts: settings.max_fallback_attempts,
+		})
+		if (!next) {
+			log("[v2 runtime-fallback] Fallback chain exhausted after a timeout; leaving the session interrupted.", { sessionID })
+			return
+		}
+		const syntheticID = `msg_${createHash("sha256").update(`${sessionID}\ntimeout\n${value.fallback.attempts}\n${delegationModelKey(next.choice.model)}`).digest("hex").slice(0, 32)}`
+		const advanced: PrimaryFallbackRecord = {
+			...value,
+			currentModel: next.choice.model,
+			currentSettings: next.choice.settings,
+			fallback: next.state,
+			lastSyntheticID: syntheticID,
+			updatedAt: Date.now(),
+		}
+		await writeState(advanced)
+		if (!active || await isStopped(sessionID)) return
+		await ctx.session.switchModel({ sessionID, model: next.choice.model })
+		const target = next.choice.model
+		const text = `The fallback model ${watch.model.providerID}/${watch.model.id} did not respond within ${Math.round(settings.timeout_ms / 1000)} seconds. Continue the same user request using ${target.providerID}/${target.id}${target.variant ? `#${target.variant}` : ""}. Do not repeat the user's prompt or completed work; continue from the conversation history.`
+		await ctx.session.synthetic({
+			sessionID,
+			id: syntheticID as Parameters<Plugin.Context["session"]["synthetic"]>[0]["id"],
+			text: text.slice(0, MAX_SYNTHETIC_TEXT),
+			description: "OMO runtime fallback timeout continuation",
+			metadata: { omoRuntimeFallback: { version: 1, reason: "timeout", attempt: next.state.attempts } },
+			delivery: "steer",
+			resume: true,
+		})
+		armWatch(sessionID, target)
 	}
 
 	const restorePendingDeliveries = async (): Promise<void> => {
@@ -587,7 +717,7 @@ export async function registerV2RuntimeFallback(
 				!history.assistant || history.assistant.agentID !== request.agentID || !sameModel(history.assistant.model, request.model) ||
 				!isRecord(error) || typeof error.type !== "string" || history.assistant.errorType !== error.type ||
 				(history.assistant.errorStatus !== undefined && error.status !== history.assistant.errorStatus) ||
-				!isRetryableProviderFailure(error, request.responseStatus, settings.retry_on_errors)) return
+				!isRetryableProviderFailure(error, request.responseStatus, settings)) return
 			const ownershipProof: PrimaryOwnershipProof = {
 				userMessageID: request.userMessageID,
 				models: [request.model],
@@ -670,7 +800,8 @@ export async function registerV2RuntimeFallback(
 		try { await eventTask } catch (error) { errors.push(error) }
 		const work = [...pending]
 		if (work.length) await Promise.allSettled(work)
-		for (const registration of [contextHook, httpResponseHook, modelRequestHook]) {
+		for (const sessionID of [...watches.keys()]) clearWatch(sessionID)
+		for (const registration of [retryHook, contextHook, httpResponseHook, modelRequestHook]) {
 			try { await registration?.dispose() } catch (error) { errors.push(error) }
 		}
 		if (errors.length) throw new AggregateError(errors, "V2 runtime fallback cleanup failed")
@@ -717,6 +848,36 @@ export async function registerV2RuntimeFallback(
 			if (!session || !active || await isStopped(String(input.sessionID))) return
 			Object.assign(input.options, state.value.currentSettings)
 		})
+		if (earlySwitch) {
+			// Legacy retry-signal handling: while the host would keep retrying a failing primary request,
+			// stop retrying when OMO has a usable fallback so the verified terminal-failure path switches models.
+			retryHook = await ctx.session.hook("retry", async (input: SessionRetry) => {
+				if (!active || !input.decision.retry) return
+				const sessionID = String(input.sessionID)
+				const request = requests.get(sessionID)
+				if (!request || request.kind !== "primary" || request.agentID !== String(input.agent) ||
+					!sameModel(request.model, modelFromHook(input.model))) return
+				if (!isRetryableProviderFailure(input.error, request.responseStatus, settings) || await isStopped(sessionID)) return
+				if (!(await isOwnedPrimary(sessionID, request.agentID))) return
+				const chain = await configuredFallback(request.agentID, request.model)
+				if (!chain?.candidates.length) return
+				const prior = await readStateOrEmpty(sessionID)
+				if (prior.kind === "invalid") return
+				const priorFallback = prior.kind === "valid" && prior.value.agentID === request.agentID && sameModel(prior.value.currentModel, request.model)
+					? prior.value.fallback
+					: undefined
+				const next = advanceV2DelegationFallback({
+					source: chain.source,
+					candidates: chain.candidates,
+					currentIndex: -1,
+					attempts: priorFallback?.attempts ?? 0,
+					failedAt: priorFallback?.failedAt ?? {},
+				}, request.model, { now: Date.now(), cooldownMs: settings.cooldown_seconds * 1000, maxAttempts: settings.max_fallback_attempts })
+				if (!next || !active) return
+				input.decision = { retry: false }
+				log("[v2 runtime-fallback] Stopping host retries so the configured fallback can take over.", { sessionID, attempt: input.attempt, mode: settings.mode })
+			})
+		}
 		eventTask = (async () => {
 			try {
 				for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
@@ -724,6 +885,24 @@ export async function registerV2RuntimeFallback(
 					const data = eventData(event)
 					const sessionID = typeof data?.sessionID === "string" ? data.sessionID : undefined
 					if (!sessionID) continue
+					const watch = watches.get(sessionID)
+					if (watch) {
+						const created = eventCreatedAt(event) ?? Date.now()
+						if (created >= watch.armedAt && (event.type === "session.step.streamed" || event.type === "session.text.started" ||
+							event.type === "session.text.delta" || event.type === "session.reasoning.started" || event.type === "session.tool.called" ||
+							event.type === "session.execution.succeeded" || event.type === "session.execution.failed" || event.type === "session.deleted")) {
+							clearWatch(sessionID)
+						} else if (event.type === "session.execution.interrupted" && created >= watch.armedAt) {
+							clearWatch(sessionID)
+							if (watch.fired) {
+								const task = serialize(sessionID, () => advanceAfterTimeout(sessionID, watch))
+								track(task)
+								try { await task } catch (error) {
+									log("[v2 runtime-fallback] Timeout advance failed closed.", { sessionID, error: error instanceof Error ? error.message : String(error) })
+								}
+							}
+						}
+					}
 					if (event.type === "session.deleted") {
 						const task = removeState(sessionID)
 						track(task)
