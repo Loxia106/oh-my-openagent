@@ -70,6 +70,7 @@ function createHost(
 			get: async ({ agentID }: { agentID: string }) => ({ data: { id: agentID, model: agentModels[agentID] } }),
 		},
 		session: {
+			hook: async () => ({ dispose: async () => undefined }),
 			get: async ({ sessionID }: { sessionID: string }) => ({
 				agent: sessionAgents.get(sessionID) ?? "sisyphus",
 				model: sessionModels.get(sessionID),
