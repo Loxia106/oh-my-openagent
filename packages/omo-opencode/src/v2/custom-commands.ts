@@ -475,6 +475,42 @@ export async function registerV2AutoSlashCommand(
 	return async () => { await registration.dispose() }
 }
 
+/**
+ * Legacy skill commands: every enabled skill was also a slash command whose template wraps the skill body
+ * with the user request. Imported commands, host commands and OMO built-ins keep their names.
+ */
+async function v2SkillCommandDefinitions(
+	ctx: Plugin.Context,
+	config: OhMyOpenCodeConfig,
+	skills: readonly LoadedSkill[],
+	taken: ReadonlySet<string>,
+): Promise<Array<[string, CommandDefinition]>> {
+	if (skills.length === 0) return []
+	const disabledSkills = collectDisabledSkillAliases(config)
+	const disabledCommands = new Set((config.disabled_commands ?? []).map((name) => String(name).toLowerCase()))
+	const native = taken.size > 0 ? taken : new Set((await ctx.command.list()).data.map((command) => command.name.toLowerCase()))
+	const result: Array<[string, CommandDefinition]> = []
+	for (const skill of skills) {
+		const name = skill.name
+		const normalized = name.toLowerCase()
+		if (disabledSkills.has(normalized) || disabledCommands.has(normalized) || RESERVED_OMO_COMMANDS.has(normalized) || native.has(normalized)) continue
+		if (!/^[a-zA-Z@][\w.:@/-]*$/.test(name)) continue
+		const body = skill.lazyContent?.loaded ? skill.lazyContent.content ?? "" : skill.definition.template ?? ""
+		const template = body.includes("<skill-instruction>")
+			? body
+			: `<skill-instruction>\n${body.trim()}\n</skill-instruction>\n\n<user-request>\n$ARGUMENTS\n</user-request>`
+		result.push([name, {
+			name,
+			description: skill.definition.description ? `(skill) ${skill.definition.description}` : "(skill)",
+			template,
+			...(skill.definition.agent ? { agent: skill.definition.agent } : {}),
+			...(skill.definition.model ? { model: skill.definition.model } : {}),
+			...(skill.definition.subtask !== undefined ? { subtask: skill.definition.subtask } : {}),
+		}])
+	}
+	return result
+}
+
 /** Register eligible imported commands without shadowing host or OMO commands. */
 export async function registerV2CustomCommands(
 	ctx: Plugin.Context,
@@ -484,7 +520,7 @@ export async function registerV2CustomCommands(
 	const directory = String(ctx.location.directory)
 	const definitions = await loadV2CustomCommandDefinitions(config, directory, loaders)
 	const names = Object.keys(definitions)
-	const nativeCommands = names.length > 0 ? await ctx.command.list() : { data: [] }
+	const nativeCommands = await ctx.command.list()
 	const nativeNames = new Set(nativeCommands.data.map((command) => command.name.toLowerCase()))
 	const eligible = Object.entries(definitions).filter(([name]) => {
 		const normalized = name.toLowerCase()
@@ -502,6 +538,8 @@ export async function registerV2CustomCommands(
 		? []
 		: await (loaders.loadSkills ?? (async (current, root) => (await loadV2SkillCatalog(current, root)).loaded))(config, directory)
 	const autoSlashCleanup = await registerV2AutoSlashCommand(ctx, config, Object.fromEntries(eligible), skills)
+	const skillCommands = await v2SkillCommandDefinitions(ctx, config, skills, new Set([...nativeNames, ...eligible.map(([name]) => name.toLowerCase())]))
+	eligible.push(...skillCommands)
 	if (eligible.length === 0) return autoSlashCleanup
 
 	const gate = createV2CommandDispatchGate()

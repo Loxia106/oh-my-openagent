@@ -379,5 +379,20 @@ describe("native OpenCode 2 custom commands", () => {
 		expect(host.commandCalls).toHaveLength(1)
 		await cleanup()
 	})
+
+	test("enabled skills are registered as slash commands with the legacy skill-instruction template", async () => {
+		const host = createHost({ nativeNames: ["review"] })
+		const mk = (name: string, body: string) => ({ name, definition: { template: body, description: `${name} skill` }, scope: "user", lazyContent: { loaded: true, content: body, load: async () => body } })
+		const cleanup = await registerV2CustomCommands(host.ctx, { disabled_commands: ["blocked"] } as unknown as OhMyOpenCodeConfig, loaders({
+			loadUserCommands: async () => ({ shared: definition("imported shared $ARGUMENTS") }),
+			loadSkills: async () => [mk("release-notes", "Write release notes"), mk("shared", "skill body"), mk("review", "x"), mk("blocked", "x"), mk("goal", "x")] as never,
+		}))
+		expect([...host.commands.keys()].sort()).toEqual(["release-notes", "shared"])
+		await host.commands.get("release-notes")!.execute(commandInput("for v2"))
+		expect((host.promptCalls[0] as { text: string }).text).toBe("<skill-instruction>\nWrite release notes\n</skill-instruction>\n\n<user-request>\nfor v2\n</user-request>")
+		await host.commands.get("shared")!.execute(commandInput("x"))
+		expect((host.promptCalls[1] as { text: string }).text).toBe("imported shared x")
+		await cleanup()
+	})
 })
 

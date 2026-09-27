@@ -133,6 +133,15 @@ async function main(): Promise<void> {
 			Boolean(commandTurn) && latestUser(commandTurn!).includes("CMD_SHELL_OUTPUT_42") && latestUser(commandTurn!).includes("first=gamma second=delta"),
 			{ users: slashRequests.map((item) => latestUser(item).slice(0, 300)) })
 
+		ids.skillCommand = await createRootSession(host.client, isolation.project, "CS skill command", "sisyphus", "qa-model")
+		const beforeSkill = mock.requests.length
+		await within("skill command", host.client.session.command({ sessionID: ids.skillCommand, name: "qa-skill", text: "the notes" }))
+		await within("skill command execution", host.client.session.wait({ sessionID: ids.skillCommand }))
+		const skillCommandTurn = mock.requests.slice(beforeSkill).find((item) => item.sessionID === ids.skillCommand && item.kind === "primary")
+		check("enabled skills are native slash commands that run the skill template with the arguments",
+			commands.includes("qa-skill") && Boolean(skillCommandTurn) && latestUser(skillCommandTurn!).includes("CMD_SKILL_BODY for the notes"),
+			{ user: skillCommandTurn ? latestUser(skillCommandTurn).slice(0, 400) : null })
+
 		check("all model requests were local and attributed",
 			mock.requests.length > 0 && mock.originFailures.length === 0 && mock.unexpectedPaths.length === 0 && mock.requests.every((item) => item.originValid),
 			{ total: mock.requests.length, originFailures: mock.originFailures })

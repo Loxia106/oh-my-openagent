@@ -18,6 +18,7 @@ import { registerV2RuntimeFallback } from "./runtime-fallback"
 import type { VerifiedLogicalParentResolver } from "./background-admission"
 import { registerV2UltraworkModelOverride } from "./ultrawork-model"
 import { registerV2UnstableAgentBabysitter } from "./unstable-agent-babysitter"
+import { registerV2ToolPairValidator } from "./tool-pair-validator"
 import { registerV2CompactionModelOverride, registerV2CompactionOverflowGuard, registerV2PreemptiveCompaction, registerV2ToolOutputTruncator } from "./long-conversation"
 
 async function unwind(cleanups: Array<() => Promise<void>>): Promise<unknown[]> {
@@ -43,6 +44,7 @@ export async function registerV2Hooks(ctx: Plugin.Context, config: OhMyOpenCodeC
 		cleanups.push(await registerV2ContextHooks(ctx, config, options))
 		cleanups.push(await registerV2ThinkModeHook(ctx, config))
 		cleanups.push(await registerV2UltraworkModelOverride(ctx, config, options))
+		cleanups.push(await registerV2ToolPairValidator(ctx, config))
 		// Claude input rewrites must precede OMO's path and tool safety checks.
 		const claudeHooks = await registerV2ClaudeHooks(ctx, config, options)
 		cleanups.push(claudeHooks.cleanup)

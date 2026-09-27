@@ -432,6 +432,7 @@ describe("native v2 context hooks", () => {
 		roots.push(directory)
 		const { ctx, disposed } = mockContext(directory)
 		await expect(registerV2Hooks(ctx, {} as OhMyOpenCodeConfig)).rejects.toThrow("permission registration failure")
-		expect(disposed).toEqual(["context", "prompt", "context", "prompt"])
+		// Reverse order: tool-pair validator, think mode, then the context/prompt pair.
+		expect(disposed).toEqual(["context", "context", "prompt", "context", "prompt"])
 	})
 })
