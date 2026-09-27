@@ -8,6 +8,7 @@ import { getV2SubagentRunState, getV2TodoState } from "./task-state"
 import { addV2FilesystemTools } from "./tool-filesystem"
 import { addV2SessionTools } from "./tool-session"
 import { registerV2SessionIndex } from "./session-index"
+import { registerV2MonitorRuntime } from "./monitor"
 import { addV2TaskSystemTools } from "./tool-task"
 import { addV2GoalTools } from "./tool-goal"
 import { registerV2DisabledToolGuard } from "./tool-disabled-guard"
@@ -66,8 +67,9 @@ function addTodoTools(editor: ToolEditor, ctx: Plugin.Context, config: OhMyOpenC
   if (disabled(config, "todoread")) editor.remove("todoread")
 }
 
-function addNativeTools(editor: ToolEditor, ctx: Plugin.Context, config: OhMyOpenCodeConfig, skillMcp?: Awaited<ReturnType<typeof registerV2SkillMcpRuntime>>): void {
+function addNativeTools(editor: ToolEditor, ctx: Plugin.Context, config: OhMyOpenCodeConfig, skillMcp?: Awaited<ReturnType<typeof registerV2SkillMcpRuntime>>, monitor?: Awaited<ReturnType<typeof registerV2MonitorRuntime>>): void {
 	addTodoTools(editor, ctx, config)
+	monitor?.addTools(editor)
 	addV2SkillMcpTool(editor, skillMcp)
   addV2FilesystemTools(editor, ctx, config)
   const runs = getV2SubagentRunState(ctx.storage)
@@ -101,10 +103,12 @@ export async function registerV2Tools(
 	let teamTools: Awaited<ReturnType<typeof ctx.tool.transform>> | undefined
 	let interactiveBash: (() => Promise<void>) | undefined
 	let sessionIndex: (() => Promise<void>) | undefined
+	let monitor: Awaited<ReturnType<typeof registerV2MonitorRuntime>>
 	try {
 		sessionIndex = await registerV2SessionIndex(ctx)
+		monitor = await registerV2MonitorRuntime(ctx, config, { resolveLogicalParent: options.team?.resolveLogicalParent })
 		skillMcp = await registerV2SkillMcpRuntime(ctx, config)
-		toolRegistration = await ctx.tool.transform((editor) => addNativeTools(editor, ctx, config, skillMcp))
+		toolRegistration = await ctx.tool.transform((editor) => addNativeTools(editor, ctx, config, skillMcp, monitor))
 		delegation = await registerV2Delegation(ctx, config, getV2SubagentRunState(ctx.storage), {
 			resolveLogicalParent: options.team?.resolveLogicalParent,
 			isStopped: options.isStopped,
@@ -124,6 +128,7 @@ export async function registerV2Tools(
 		if (interactiveBash) cleanups.push(interactiveBash)
     if (disabledToolGuard) cleanups.push(disabledToolGuard)
     if (sessionIndex) cleanups.unshift(sessionIndex)
+    if (monitor) cleanups.unshift(() => monitor!.cleanup())
     try {
       await disposeV2ToolRegistrations(cleanups)
     } catch (cleanupError) {
@@ -146,6 +151,7 @@ export async function registerV2Tools(
 		if (interactiveBash) cleanups.push(interactiveBash)
 		cleanups.push(async () => disabledToolGuard?.())
 		if (sessionIndex) cleanups.unshift(sessionIndex)
+		if (monitor) cleanups.unshift(() => monitor!.cleanup())
 		await disposeV2ToolRegistrations(cleanups)
 	}
 	return {

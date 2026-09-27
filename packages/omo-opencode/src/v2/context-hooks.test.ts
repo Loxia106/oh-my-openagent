@@ -6,7 +6,7 @@ import type { Plugin } from "@opencode/plugin"
 import type { SessionContext, SessionPrompt } from "@opencode/plugin/promise/session"
 import type { OhMyOpenCodeConfig } from "../config"
 import { getHyperplanUltraworkMessage, getUltraworkMessage, HYPERPLAN_MESSAGE, TEAM_MESSAGE } from "../hooks/keyword-detector/constants"
-import { registerV2ContextHooks } from "./context-hooks"
+import { TEAM_MODE_STATUS, registerV2ContextHooks } from "./context-hooks"
 import { registerV2Hooks } from "./hooks"
 import { createV2DelegationSettings } from "./delegation-settings"
 import { V2_HYPERPLAN_MODE_PROMPT } from "./team-skill-adapter"
@@ -185,8 +185,13 @@ describe("native v2 context hooks", () => {
 		const system = input.system.map((part) => part.text)
 		expect(system).toContain(getHyperplanUltraworkMessage("sisyphus", "openai/mock"))
 		expect(system).toContain(TEAM_MESSAGE)
+		expect(system).toContain(TEAM_MODE_STATUS)
 		expect(system).not.toContain(getUltraworkMessage("sisyphus", "openai/mock"))
 		expect(system.join("\n")).not.toContain("<native-mode-compatibility>")
+		const later = contextInput()
+		later.messages = [{ role: "user", content: "Now summarize the results." }] as never
+		await callbacks.get("context")?.(later)
+		expect(later.system.map((part) => part.text)).not.toContain(TEAM_MODE_STATUS)
 		await cleanup()
 	})
 

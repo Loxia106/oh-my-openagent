@@ -12,6 +12,7 @@ import type { LoadedSkill } from "../features/opencode-skill-loader/types"
 import { loadV2SkillCatalog } from "./skills"
 import { toV2McpConfig } from "./mcp"
 import { addV2Tool } from "./tool-adapter"
+import { evaluatePermissionEffect } from "./permission-rules"
 import { BUILTIN_MCP_TOOL_HINTS, SKILL_MCP_DESCRIPTION } from "../tools/skill-mcp/constants"
 import { parseSkillMcpArguments } from "../tools/skill-mcp/parse-skill-mcp-arguments"
 import { log } from "../shared/logger"
@@ -122,16 +123,6 @@ function withCdpEndpoint(config: McpSchema.ServerConfig, cdpUrl: string): McpSch
 	return { ...config, command: [...record.command, "--cdp-endpoint", cdpUrl] } as McpSchema.ServerConfig
 }
 
-type PermissionRule = { action: string; resource: string; effect: "allow" | "ask" | "deny" }
-
-function wildcardMatches(value: string, pattern: string): boolean {
-	// Keep this aligned with OpenCode's Wildcard.match implementation.
-	const normalized = value.replaceAll("\\", "/")
-	let escaped = pattern.replaceAll("\\", "/").replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")
-	if (escaped.endsWith(" .*")) escaped = escaped.slice(0, -3) + "( .*)?"
-	return new RegExp(`^${escaped}$`, process.platform === "win32" ? "si" : "s").test(normalized)
-}
-
 function isNativeSkillToolId(toolID: string, serverNames: Iterable<string>): boolean {
 	for (const serverName of serverNames) {
 		if (toolID.startsWith(`${nativeNamespace(serverName)}_`)) return true
@@ -185,38 +176,6 @@ function withAbort<T>(promise: Promise<T>, signal: AbortSignal, message: string)
 async function currentServers(ctx: Plugin.Context): Promise<readonly { name: string; status: { status: string; error?: string } }[]> {
 	const response = await ctx.mcp.list({})
 	return response.data as readonly { name: string; status: { status: string; error?: string } }[]
-}
-
-async function baseActionEffect(
-	ctx: Plugin.Context,
-	sessionID: string,
-	agentID: string | undefined,
-	action: string,
-	resources: readonly string[],
-): Promise<"allow" | "ask" | "deny" | undefined> {
-	const agents = (await ctx.agent.list()).data as Array<{ id: string; permissions?: PermissionRule[] }>
-	let result: "allow" | "ask" | "deny" | undefined
-	let current: { id: string; parentID?: string; agent?: string; permissions?: unknown } | undefined = await ctx.session.get({ sessionID })
-	let depth = 0
-	const seen = new Set<string>()
-	while (current && depth < 32 && !seen.has(current.id)) {
-		seen.add(current.id)
-		const owner = depth === 0 && agentID ? agentID : current.agent
-		const rules = [
-			...((agents.find((agent) => agent.id === owner)?.permissions ?? []) as PermissionRule[]),
-			...((Array.isArray(current.permissions) ? current.permissions : []) as PermissionRule[]),
-		]
-		for (const resource of resources.length > 0 ? resources : ["*"]) {
-			const matched = rules.findLast((rule) => wildcardMatches(action, rule.action) && wildcardMatches(resource, rule.resource))
-			if (matched?.effect === "deny") return "deny"
-			if (matched?.effect === "ask") result = "ask"
-			else if (matched?.effect === "allow" && result === undefined) result = "allow"
-		}
-		if (!current.parentID) break
-		current = await ctx.session.get({ sessionID: current.parentID })
-		depth++
-	}
-	return result
 }
 
 /** Register the legacy skill_mcp surface using native MCP transforms and executors. */
@@ -281,7 +240,7 @@ export async function registerV2SkillMcpRuntime(
 				if (!event.action.startsWith(prefix)) continue
 				const baseAction = `${nativeNamespace(base)}_${event.action.slice(prefix.length)}`
 				try {
-					const effect = await baseActionEffect(ctx, String(event.sessionID), event.agent ? String(event.agent) : undefined, baseAction, event.resources)
+					const effect = await evaluatePermissionEffect(ctx, String(event.sessionID), event.agent ? String(event.agent) : undefined, baseAction, event.resources)
 					if (effect === "deny") {
 						event.effect = "deny"
 						event.message = `Denied by the permission policy for ${baseAction}.`

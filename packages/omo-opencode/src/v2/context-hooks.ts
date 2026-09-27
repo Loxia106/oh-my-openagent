@@ -16,6 +16,12 @@ import type { VerifiedLogicalParentResolver } from "./background-admission"
 import { V2_HYPERPLAN_MODE_PROMPT } from "./team-skill-adapter"
 
 const SESSION_STATE_LIMIT = 256
+const TEAM_MODE_STATUS_MARKER = "<team_mode_status enabled=\"true\">"
+export const TEAM_MODE_STATUS = `${TEAM_MODE_STATUS_MARKER}
+Team mode is ENABLED for this session. Presence of the team_* tools is authoritative proof; do not inspect config files to verify.
+Closure invariant: every team you open is yours to close. After each team_task_update that completes or fails a task, call team_task_list({ teamRunId }); if every task is terminal, run team_shutdown_request + team_approve_shutdown per active member, then team_delete — in the same turn, without waiting for the user to ask. Lingering teams are a defect.
+Load the team-mode skill for the full Closure Contract and Closure Sequence.
+</team_mode_status>`
 const STOP_CONTINUATION_COMMAND = /^\s*\/stop-continuation(?:\s|$)/i
 const SLASH_COMMAND = /^\s*\/[a-zA-Z][\w-]*(?:\s|$)/
 const NATIVE_AGENTS_WITHOUT_OMO_KEYWORD_MODES = new Set(["build", "plan"])
@@ -223,6 +229,10 @@ export async function registerV2ContextHooks(ctx: Plugin.Context, config: OhMyOp
 		const existing = systemText(input.system)
 		for (const prompt of getModePrompt(mode, agent, model, teamModeAvailable)) {
 			if (!existing.includes(prompt)) input.system.push({ type: "text", text: prompt })
+		}
+		// Legacy team-mode-status-injector: a turn that asks for Team mode also gets the closure invariant.
+		if (detected.team && teamModeAvailable && !existing.includes(TEAM_MODE_STATUS_MARKER)) {
+			input.system.push({ type: "text", text: TEAM_MODE_STATUS })
 		}
 		})
 	} catch (error) {

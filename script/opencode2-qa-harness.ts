@@ -321,6 +321,8 @@ export async function writeHostConfig(config: HostConfig): Promise<Record<string
 			disabled_mcps: ["websearch", "context7", "grep_app", "lsp"],
 			mcp_env_allowlist: [],
 			claude_code: { mcp: false, agents: false, skills: false, commands: false, plugins: false, hooks: false },
+			// sg provisioning downloads a pinned release; keep isolated runs localhost-only.
+			disabled_hooks: ["ast-grep-sg-provision"],
 			...config.omo,
 		},
 	}, null, 2) + "\n")
