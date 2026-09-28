@@ -153,30 +153,6 @@ function applyPrometheusOverrides(
   return result
 }
 
-/**
- * V1 exposed synthetic `bg_` handles, while the native v2 background tools take
- * the child session's `ses_` ID directly. Rewrite only the built-in factory
- * prompt before user prompt overrides/appends and loaded skill bodies are
- * applied; never touch a user's request or custom agent prompt.
- */
-function adaptNativeBackgroundSessionPrompt(prompt: string): string {
-  const lines = prompt.split("\n").map((line) => {
-    if (line.includes("background task IDs") && line.includes("continuation session IDs") &&
-      line.includes("background_output") && line.includes("task(") && line.includes("bg_")) {
-      const indentation = line.match(/^\s*/)?.[0] ?? ""
-      return `${indentation}Use the native child session ID (\`ses_...\`) for \`background_output(task_id=\"ses_...\")\`, \`background_cancel(taskId=\"ses_...\")\`, and \`task(task_id=\"ses_...\")\` follow-ups.`
-    }
-    return line.replace(/\bbg_(?:\.\.\.|[A-Za-z0-9_-]+)/g, (id) => `ses_${id.slice(3)}`)
-  })
-  return lines.join("\n")
-}
-
-function adaptNativeBuiltInPrompt(config: AgentConfig): AgentConfig {
-  return typeof config.prompt === "string"
-    ? { ...config, prompt: adaptNativeBackgroundSessionPrompt(config.prompt) }
-    : config
-}
-
 const LOOKER_LEGACY_ATTACHMENT_INSTRUCTION = "During look_at invocations, the file or image is already attached to the message. Analyze the attachment directly. Never call tools, never spawn other agents, and never try to load the file by path."
 
 const LOOKER_NATIVE_READ_INSTRUCTION = "The caller provides local file paths; file bytes are not attached to this conversation. Use the native read tool only for the exact caller-provided paths, and analyze its returned image or PDF content. Do not write files or spawn agents. If a path cannot be read or its format is unsupported, say so clearly."
@@ -585,7 +561,6 @@ function catalogPrompts(input: {
         disabledTools: config.disabled_tools,
       })
     }
-    base = adaptNativeBuiltInPrompt(base)
     let built = name === "prometheus"
       ? applyPrometheusOverrides(base, override, mergedCategories, directory)
       : applyOverrides(base, override, mergedCategories, directory)
@@ -726,7 +701,6 @@ export function createV2BuiltinAgentPromptRenderer(input: BuildV2AgentConfigsInp
       log(`[v2 agent] Could not render ${name} prompt for runtime model ${model}; retaining its registered prompt.`, error)
       return undefined
     }
-    base = adaptNativeBuiltInPrompt(base)
     const override = getOverride(config, name)
     let rendered = name === "prometheus"
       ? applyPrometheusOverrides(base, override, mergedCategories, directory)

@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import type { Plugin } from "@opencode/plugin"
-import type { ToolContext, ToolEditor } from "@opencode/plugin/promise/tool"
+import { Error as ToolError, type ToolContext, type ToolEditor } from "@opencode/plugin/promise/tool"
 import { createV2SubagentRunState } from "./task-state"
-import { registerV2Delegation, resolveAgentId, toolRestrictionsToActions } from "./delegation"
+import { registerV2Delegation, resolveAgentId, toolRestrictionsToActions, v2BackgroundTaskID } from "./delegation"
 
 type RegisteredTool = { id: string; name: string; input: unknown; output?: unknown; description: string; options?: unknown; execute: (args: any, context: ToolContext) => Promise<any> }
 class TestEditor {
@@ -1080,6 +1080,110 @@ describe("native V2 delegation", () => {
       expect(await runs.children("ses-parent")).toEqual([])
     } finally {
       await instance.runtime.cleanup()
+    }
+  })
+
+  test("background launches return a legacy bg_ ID that background_output and background_cancel accept", async () => {
+    const instance = await harness({
+      nativeExecute: async (_args, context) => {
+        await context.progress({ sessionID: "ses-bg-child", status: "running" })
+        return { output: { sessionID: "ses-bg-child", status: "running", output: "working" }, content: "working", metadata: { sessionID: "ses-bg-child", status: "running" } }
+      },
+    })
+    try {
+      const launched = await instance.editor.get("task")!.execute({
+        subagent_type: "explore", prompt: "Research", description: "Research", run_in_background: true,
+      }, toolContext())
+      const bgID = v2BackgroundTaskID("ses-bg-child")
+      expect(bgID).toMatch(/^bg_[0-9a-f]{8}$/)
+      expect(launched.content).toContain(`Background Task ID: ${bgID}`)
+      expect(launched.content).toContain("session_id: ses-bg-child")
+      expect(launched.content).toContain(`background_task_id: ${bgID}`)
+      expect(launched.metadata).toMatchObject({ sessionID: "ses-bg-child", backgroundTaskId: bgID })
+
+      const output = await instance.editor.get("background_output")!.execute({ task_id: bgID }, toolContext())
+      expect(output.content).toContain(`Background Task ID: ${bgID}`)
+      expect(output.content).toContain("Session: ses-bg-child")
+      await expect(instance.editor.get("background_output")!.execute({ task_id: "bg_00000000" }, toolContext()))
+        .rejects.toThrow("Unknown background task ID")
+      await expect(instance.editor.get("background_output")!.execute({ task_id: bgID }, toolContext("ses-other")))
+        .rejects.toThrow("Unknown background task ID")
+
+      const cancelled = await instance.editor.get("background_cancel")!.execute({ taskId: bgID }, toolContext())
+      expect(instance.interrupted).toEqual(["ses-bg-child"])
+      expect(cancelled.content).toContain(`${bgID} (ses-bg-child)`)
+    } finally {
+      await instance.runtime.cleanup()
+    }
+  })
+
+  test("an explicit foreground task on an unstable category model runs as a supervised task", async () => {
+    const instance = await harness({
+      models: [{ id: "gemini-3-pro", providerID: "google", enabled: true }],
+      config: { categories: { visual: { model: "google/gemini-3-pro" } } },
+    })
+    try {
+      const result = await instance.editor.get("task")!.execute({
+        category: "visual", prompt: "Build the page", description: "Build page", run_in_background: false,
+      }, toolContext())
+      const bgID = v2BackgroundTaskID("ses-child-1")
+      expect(result.content).toStartWith("SUPERVISED TASK COMPLETED SUCCESSFULLY")
+      expect(result.content).toContain("This model (google/gemini-3-pro) is marked as unstable/experimental.")
+      expect(result.content).toContain(`background_cancel(taskId="${bgID}")`)
+      expect(result.content).toContain("RESULT:\n\ndone")
+      expect(result.content).toContain(`background_task_id: ${bgID}`)
+      expect(result.metadata).toMatchObject({ supervised: true, backgroundTaskId: bgID })
+
+      // Omitted run_in_background, stable models and explicit background runs keep the ordinary paths.
+      const omitted = await instance.editor.get("task")!.execute({ category: "visual", prompt: "Again", description: "Again" }, toolContext())
+      expect(omitted.content).toBe("done")
+    } finally {
+      await instance.runtime.cleanup()
+    }
+  })
+
+  test("a failed or timed-out supervised task keeps a typed failure with the legacy framing", async () => {
+    const failing = await harness({
+      models: [{ id: "minimax-m3", providerID: "minimax", enabled: true }],
+      config: { categories: { visual: { model: "minimax/minimax-m3" } } },
+      nativeExecute: async (_args, context) => {
+        await context.progress({ sessionID: "ses-unstable", status: "running" })
+        throw new ToolError({ message: "Subagent failed (sessionID: ses-unstable): provider exploded" })
+      },
+    })
+    try {
+      await expect(failing.editor.get("task")!.execute({
+        category: "visual", prompt: "Fix", description: "Fix", run_in_background: false,
+      }, toolContext())).rejects.toThrow(/^SUPERVISED TASK FAILED[\s\S]*provider exploded[\s\S]*background_task_id: bg_/)
+    } finally {
+      await failing.runtime.cleanup()
+    }
+
+    let interruptChild!: () => void
+    const timed = await harness({
+      models: [{ id: "gemini-3-pro", providerID: "google", enabled: true }],
+      config: { categories: { visual: { model: "google/gemini-3-pro" } }, background_task: { syncPollTimeoutMs: 60_000 } },
+      nativeExecute: async (_args, context) => {
+        await context.progress({ sessionID: "ses-slow", status: "running" })
+        await new Promise<void>((resolve) => { interruptChild = resolve })
+        throw new ToolError({ message: "Subagent cancelled (sessionID: ses-slow)" })
+      },
+    })
+    const realSetTimeout = globalThis.setTimeout
+    try {
+      // Fire the 60s supervision budget immediately.
+      globalThis.setTimeout = ((callback: () => void, ms?: number) => realSetTimeout(callback, ms === 60_000 ? 0 : ms)) as typeof setTimeout
+      const running = timed.editor.get("task")!.execute({
+        category: "visual", prompt: "Slow", description: "Slow", run_in_background: false,
+      }, toolContext())
+      await waitFor(() => timed.interrupted.includes("ses-slow"))
+      globalThis.setTimeout = realSetTimeout
+      interruptChild()
+      await expect(running).rejects.toThrow(/^SUPERVISED TASK TIMED OUT[\s\S]*60000ms/)
+    } finally {
+      globalThis.setTimeout = realSetTimeout
+      interruptChild?.()
+      await timed.runtime.cleanup()
     }
   })
 })

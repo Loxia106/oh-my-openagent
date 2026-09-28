@@ -158,7 +158,7 @@ describe("native v2 agents", () => {
     })
   })
 
-  test("uses native child session IDs in built-in background guidance without rewriting user prompt additions", () => {
+  test("keeps the legacy bg_/ses_ background guidance, which the native background tools now accept", () => {
     const catalog = new V2ModelCatalog()
     const configs = buildV2AgentConfigs({
       config: {} as OhMyOpenCodeConfig,
@@ -168,8 +168,8 @@ describe("native v2 agents", () => {
     })
 
     for (const name of ["sisyphus", "hephaestus"] as const) {
-      expect(configs[name]?.prompt).toContain('background_output(task_id="ses_...")')
-      expect(configs[name]?.prompt).not.toContain("bg_")
+      expect(configs[name]?.prompt).toContain('background_output(task_id="bg_...")')
+      expect(configs[name]?.prompt).not.toContain('background_output(task_id="ses_...")')
     }
 
     const withUserAppend = buildV2AgentConfigs({

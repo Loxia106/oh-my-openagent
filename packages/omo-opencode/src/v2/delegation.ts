@@ -8,6 +8,8 @@ import { isProviderDisabled } from "../shared/disabled-providers"
 import { stripInvisibleAgentCharacters } from "../shared/agent-display-names"
 import { resolvePromptAppend } from "../agents/builtin-agents/resolve-file-uri"
 import { log } from "../shared/logger"
+import { buildTaskMetadataBlock } from "../features/tool-metadata-store/task-metadata-contract"
+import { createHash } from "node:crypto"
 import { addV2Tool } from "./tool-adapter"
 import { addV2LookAtTool } from "./tool-look-at"
 import { readOwnedChildSession, type V2SessionStatus } from "./session-history"
@@ -15,6 +17,7 @@ import type { V2SubagentRunState } from "./task-state"
 import { createV2DelegationAdmission, resolveV2DelegationModelChoice } from "./delegation-admission"
 import type { V2BackgroundAdmission, VerifiedLogicalParentResolver } from "./background-admission"
 import type { DelegationModelChoice } from "./delegation-model-selection"
+import { isV2UnstableChild } from "./unstable-agent-babysitter"
 
 type NativeSubagent = Info & { readonly id: string }
 type ToolConfig = Readonly<Record<string, boolean>>
@@ -69,6 +72,48 @@ const backgroundCancelInput = z.object({
   taskId: z.string().optional(),
   all: z.boolean().optional(),
 })
+
+/** Legacy supervised-task budget (`background_task.syncPollTimeoutMs`, default 30 minutes). */
+const DEFAULT_SUPERVISED_TIMEOUT_MS = 30 * 60 * 1000
+
+/** Stable legacy-style `bg_` handle for a child session; prompts use it with background_output/background_cancel. */
+export function v2BackgroundTaskID(sessionID: string): string {
+  return `bg_${createHash("sha256").update(sessionID).digest("hex").slice(0, 8)}`
+}
+
+/** Accept either a `bg_` handle or a child sessionID; `bg_` handles resolve only among this parent's children. */
+export async function resolveV2TaskReference(runs: V2SubagentRunState, parentSessionID: string, reference: string): Promise<string> {
+  const value = reference.trim()
+  if (!value.startsWith("bg_")) return value
+  const candidates = [...new Set([...await runs.children(parentSessionID), ...await runs.observed(parentSessionID)])]
+  const matches = candidates.filter((sessionID) => v2BackgroundTaskID(sessionID) === value)
+  if (matches.length === 1) return matches[0]!
+  throw new ToolError({ message: matches.length > 1
+    ? `Background task ID ${value} is ambiguous; pass the child sessionID instead.`
+    : `Unknown background task ID ${value}. Use a bg_ ID or sessionID from a task launched by this session.` })
+}
+
+type NativeTaskResult = Awaited<ReturnType<NativeSubagent["execute"]>>
+
+function resultMetadata(result: NativeTaskResult): Record<string, unknown> {
+  return typeof result.metadata === "object" && result.metadata !== null ? result.metadata as Record<string, unknown> : {}
+}
+
+function appendResultText(content: NativeTaskResult["content"], text: string): NativeTaskResult["content"] {
+  if (typeof content === "string") return `${content}${content.trim() ? "\n\n" : ""}${text}`
+  return [...(content ?? []), { type: "text" as const, text }]
+}
+
+function resultOutputText(result: NativeTaskResult): string {
+  const output = result.output as { output?: unknown } | undefined
+  if (typeof output?.output === "string") return output.output
+  return typeof result.content === "string" ? result.content : ""
+}
+
+function formatDuration(ms: number): string {
+  const seconds = Math.round(ms / 1000)
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`
+}
 
 function isDisabled(values: readonly string[] | undefined, name: string): boolean {
   return values?.some((value) => stripInvisibleAgentCharacters(value).trim().toLowerCase() === name.toLowerCase()) ?? false
@@ -368,8 +413,9 @@ function registerToolAliases(input: {
   const nativeRead = editor.get("read")
 
   const launch = async (
-    request: { agent: string; description: string; prompt: string; model?: string; modelSelection?: DelegationModelChoice; sessionID?: string; background: boolean; blockedActions?: string[] },
+    request: { agent: string; description: string; prompt: string; model?: string; modelSelection?: DelegationModelChoice; sessionID?: string; background: boolean; blockedActions?: string[]; category?: string },
     toolContext: ToolContext,
+    onChild?: (sessionID: string) => void,
   ) => {
     // Agent transforms can change the visible catalog after tool transforms run.
     // Resolve at invocation time so validation matches the current native registry.
@@ -395,6 +441,7 @@ function registerToolAliases(input: {
       const data = metadata as Record<string, unknown>
       const childSessionID = typeof data.sessionID === "string" ? data.sessionID : undefined
       if (childSessionID) {
+        onChild?.(childSessionID)
         const startedAt = Date.now()
         const blockedActions = request.blockedActions ?? []
         await runs.recordLaunch(childSessionID, {
@@ -426,7 +473,88 @@ function registerToolAliases(input: {
       preparedFallback?.choice ?? request.modelSelection,
       preparedFallback,
     )
-    return result
+    const metadata = resultMetadata(result)
+    const output = (typeof result.output === "object" && result.output !== null ? result.output : {}) as { sessionID?: unknown; status?: unknown }
+    const childSessionID = typeof metadata.sessionID === "string" ? metadata.sessionID : typeof output.sessionID === "string" ? output.sessionID : undefined
+    const status = metadata.status ?? output.status
+    if (!childSessionID || status !== "running") return result
+    // Legacy prompts collect background results by `bg_` ID and continue work by session ID.
+    const backgroundTaskId = v2BackgroundTaskID(childSessionID)
+    return {
+      ...result,
+      content: appendResultText(result.content, [
+        `Background Task ID: ${backgroundTaskId}`,
+        buildTaskMetadataBlock({ sessionId: childSessionID, taskId: childSessionID, backgroundTaskId, agent: agentID, category: request.category }),
+      ].join("\n")),
+      metadata: { ...metadata, backgroundTaskId },
+    }
+  }
+
+  /**
+   * Legacy unstable-agent policy: an explicit foreground call on an unstable category model runs as a
+   * supervised task with a `bg_` handle, a timeout budget and the legacy SUPERVISED result framing.
+   * The native job stays in the foreground so the parent does not also receive a background completion notice.
+   */
+  const superviseUnstable = async (
+    request: Parameters<typeof launch>[0] & { model?: string },
+    toolContext: ToolContext,
+  ): Promise<NativeTaskResult> => {
+    const budget = config.background_task?.syncPollTimeoutMs ?? DEFAULT_SUPERVISED_TIMEOUT_MS
+    const startedAt = Date.now()
+    let childSessionID: string | undefined
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      if (childSessionID) {
+        void ctx.session.interrupt({ sessionID: childSessionID as Parameters<Plugin.Context["session"]["interrupt"]>[0]["sessionID"] })
+          .catch((error) => log("[v2 delegation] Could not interrupt a timed-out supervised task.", { sessionID: childSessionID, error }))
+      }
+    }, budget)
+    const header = (title: string) => [
+      title,
+      "",
+      `Duration: ${formatDuration(Date.now() - startedAt)}`,
+      `Agent: ${request.agent}${request.category ? ` (category: ${request.category})` : ""}`,
+      `Model: ${request.model ?? "unknown"}`,
+    ].join("\n")
+    const metadataBlock = () => childSessionID
+      ? buildTaskMetadataBlock({ sessionId: childSessionID, taskId: childSessionID, backgroundTaskId: v2BackgroundTaskID(childSessionID), agent: request.agent, category: request.category })
+      : ""
+    try {
+      // A child that completed despite a late interrupt request still returns its result.
+      const result = await launch(request, toolContext, (sessionID) => { childSessionID ??= sessionID })
+      const text = [
+        header("SUPERVISED TASK COMPLETED SUCCESSFULLY"),
+        "",
+        `IMPORTANT: This model (${request.model ?? "unknown"}) is marked as unstable/experimental.`,
+        "Your run_in_background=false call ran as a supervised task with a background task ID for reliability monitoring.",
+        "",
+        "MONITORING INSTRUCTIONS:",
+        "- The task was monitored and completed successfully",
+        "- If you observe this agent behaving erratically in future calls, actively monitor its progress",
+        `- Use background_cancel(taskId="${childSessionID ? v2BackgroundTaskID(childSessionID) : "bg_..."}") to abort if the agent seems stuck or producing garbage output`,
+        "- Do NOT retry automatically if you see this message - the task already succeeded",
+        "",
+        "---",
+        "",
+        "RESULT:",
+        "",
+        resultOutputText(result) || "(No text output)",
+        "",
+        metadataBlock(),
+      ].join("\n")
+      return {
+        ...result,
+        content: text,
+        metadata: { ...resultMetadata(result), ...(childSessionID ? { backgroundTaskId: v2BackgroundTaskID(childSessionID) } : {}), supervised: true },
+      }
+    } catch (error) {
+      if (!(error instanceof ToolError) || error.message.startsWith("SUPERVISED TASK")) throw error
+      const title = timedOut ? "SUPERVISED TASK TIMED OUT" : "SUPERVISED TASK FAILED"
+      throw new ToolError({ message: `${header(title)}\n\n${timedOut ? `Task did not complete within the monitored timeout budget (${budget}ms) and was interrupted.` : error.message}\nThe task session may contain partial results.\n\n${metadataBlock()}` })
+    } finally {
+      clearTimeout(timer)
+    }
   }
 
   addV2LookAtTool(editor, config, nativeRead, (request, context) =>
@@ -436,7 +564,7 @@ function registerToolAliases(input: {
   if (!toolDisabled(config, "task")) {
     addV2Tool(editor, {
       name: "task",
-      description: "Delegate a new task with exactly one of category or subagent_type. To continue a child, pass its task_id and prompt without either selector; the stored child agent, model, and tool restrictions are preserved. Use background mode for independent work; the result includes the native child sessionID.",
+      description: "Delegate a new task with exactly one of category or subagent_type. To continue a child, pass its task_id and prompt without either selector; the stored child agent, model, and tool restrictions are preserved. Use background mode for independent work; a background launch returns a background task ID (`bg_...`) for background_output/background_cancel and the child sessionID (`ses_...`) for task_id follow-ups.",
       input: taskInput,
       output: native.output,
       options: { codemode: false, permission: "task" },
@@ -495,7 +623,7 @@ function registerToolAliases(input: {
           skills,
           parentAgent: context.agent,
         })
-        return withDelegationAlias(invocations, "task", context, () => launch({
+        const request = {
           agent,
           description: args.description?.trim() || args.prompt.trim().split(/\s+/).slice(0, 5).join(" "),
           prompt,
@@ -504,7 +632,12 @@ function registerToolAliases(input: {
           sessionID: args.task_id,
           background: runInBackground,
           blockedActions,
-        }, context))
+          category: args.category,
+        }
+        const supervised = Boolean(args.category) && !args.task_id && args.run_in_background === false &&
+          !toolDisabled(config, "background_cancel") && isV2UnstableChild(config, model, args.category)
+        if (supervised) log("[v2 delegation] Running an explicit foreground task on an unstable model as a supervised task.", { category: args.category, model })
+        return withDelegationAlias(invocations, "task", context, () => supervised ? superviseUnstable(request, context) : launch(request, context))
       },
     })
   } else {
@@ -563,11 +696,11 @@ function registerToolAliases(input: {
   if (!toolDisabled(config, "background_output")) {
     addV2Tool(editor, {
       name: "background_output",
-      description: "Read output from an OMO native child session by sessionID. Use block=true to wait for the current execution; a sessionID is not a legacy bg_ task ID.",
+      description: "Read output from a background task by its background task ID (`bg_...`) or child sessionID. Use block=true to wait for the current execution.",
       input: backgroundOutputInput,
       options: { codemode: false },
-      execute: async (args, context) => {
-        if (args.task_id.startsWith("bg_")) throw new ToolError({ message: "This native V2 integration returns child sessionIDs, not bg_ IDs. Pass the sessionID from task metadata." })
+      execute: async (rawArgs, context) => {
+        const args = { ...rawArgs, task_id: await resolveV2TaskReference(runs, context.sessionID, rawArgs.task_id) }
         await readOwnedChildSession(ctx, context.sessionID, args.task_id, input.resolveLogicalParent)
         let run = await runs.get(args.task_id)
         if (run && run.parentSessionID !== context.sessionID) throw new ToolError({ message: `Session ${args.task_id} is not owned by this parent session.` })
@@ -615,7 +748,7 @@ function registerToolAliases(input: {
             })
           }
         }
-        const base = `Session: ${args.task_id}\nStatus: ${status}${waitTimedOut ? `\nWait timed out after ${Math.min(args.timeout ?? 60000, 600000)}ms.` : ""}`
+        const base = `Background Task ID: ${v2BackgroundTaskID(args.task_id)}\nSession: ${args.task_id}\nStatus: ${status}${waitTimedOut ? `\nWait timed out after ${Math.min(args.timeout ?? 60000, 600000)}ms.` : ""}`
         if (status === "running") return { content: `${base}\nThe current child execution has not reached a verified idle state.` }
         if (status === "unknown") return { content: `${base}\nThe active execution could not be verified after plugin reload. Pass block=true to wait for an authoritative idle transition.` }
         const transcript = await import("./session-history").then(({ readSessionHistory }) => readSessionHistory(ctx, args.task_id, {
@@ -627,7 +760,7 @@ function registerToolAliases(input: {
           fromEnd: args.from_end,
           thinkingMaxChars: args.thinking_max_chars,
         }))
-        return { content: `${base}\n\n${transcript}`, metadata: { sessionID: args.task_id, status, parentSessionID: context.sessionID } }
+        return { content: `${base}\n\n${transcript}`, metadata: { sessionID: args.task_id, backgroundTaskId: v2BackgroundTaskID(args.task_id), status, parentSessionID: context.sessionID } }
       },
     })
   }
@@ -635,13 +768,13 @@ function registerToolAliases(input: {
   if (!toolDisabled(config, "background_cancel")) {
     addV2Tool(editor, {
       name: "background_cancel",
-      description: "Interrupt a native child subagent session by its sessionID. Set all=true to interrupt tracked running children of the current session.",
+      description: "Cancel a background task by its background task ID (`bg_...`) or child sessionID. Set all=true to interrupt tracked running children of the current session.",
       input: backgroundCancelInput,
       options: { codemode: false },
       execute: async (args, context) => {
         const sessionIDs = args.all
           ? await runs.children(context.sessionID)
-          : args.taskId ? [args.taskId] : []
+          : args.taskId ? [await resolveV2TaskReference(runs, context.sessionID, args.taskId)] : []
         if (sessionIDs.length === 0) throw new ToolError({ message: "Provide taskId or set all=true when tracked running children exist." })
         const interrupted: string[] = []
         for (const sessionID of sessionIDs) {
@@ -653,7 +786,7 @@ function registerToolAliases(input: {
           interrupted.push(sessionID)
           await runs.markTerminal(sessionID, "interrupted", Date.now())
         }
-        return { content: interrupted.length ? `Interrupt requested for child session(s): ${interrupted.join(", ")}` : "No tracked running child sessions were found." }
+        return { content: interrupted.length ? `Interrupt requested for background task(s): ${interrupted.map((sessionID) => `${v2BackgroundTaskID(sessionID)} (${sessionID})`).join(", ")}` : "No tracked running child sessions were found." }
       },
     })
   }
