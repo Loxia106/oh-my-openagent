@@ -1,514 +1,276 @@
-> [!WARNING]
-> **Personal fork:** this branch ports the eleven built-in agents' conversation pipelines to the native OpenCode **2.0.18** API: prompts, skills, commands, delegation, review, and continuation. It is not an upstream Oh My OpenAgent release. Read the [pipeline verification](docs/opencode2-agent-pipelines.md) and [compatibility boundaries](docs/opencode2-compatibility.md). The upstream SUL-1.0 license and notices remain in force.
->
-> To install this fork, follow [Install this fork on OpenCode 2.0.18](#install-this-fork-on-opencode-2018) below. The upstream npm installation commands do not install it.
+# oh-my-openagent for OpenCode 2
 
-> [!NOTE]
-> **OmO 5.0: OmO ❤️ Pi**
-> Install it with `bun add -g omo-ai`. Memory system, CodeMode, Anthropic subscriptions, all covered.
-> [![OmO Herdr DAG - live OmO workflow DAGs in a Herdr side pane](./.github/assets/omo-herdr-dag.png)](https://github.com/jc01rho/omo-herdr-dag)
-> *Just type "mass ulw" with your prompt - now you are the master of graph engineering. Multi-model ultracode, together with a better memory system. (The right panel is [omo-herdr-dag](https://github.com/jc01rho/omo-herdr-dag).)*
+[Oh My OpenAgent](https://github.com/code-yeongyu/oh-my-openagent)(OMO)의 에이전트 파이프라인을 **OpenCode 2.0.18 네이티브 플러그인 API**로 옮긴 개인 포크입니다. Sisyphus·Hephaestus·Prometheus·Atlas와 보조 에이전트의 프롬프트, 전용 스킬, 명령어, 훅, 위임, 검토, 작업 재개를 OpenCode 2에서 그대로 쓰는 것이 목표입니다.
 
-> **Sponsors**
-> These are our sponsors. They help keep OmO going as a personal side project.
-> | [<img alt="OpenGateway" src="./.github/assets/opengateway-logo.svg" width="156px" />](https://opengateway.ai/) | **[OpenGateway](https://opengateway.ai/)** sponsors OmO. An OpenAI-compatible gateway that puts many model providers behind one API. Thank you for backing open source. |
-> | :-----| :----- |
+> [!IMPORTANT]
+> - 공식 Oh My OpenAgent 배포판이 아닙니다. 업스트림의 `bunx oh-my-openagent install`이나 npm 패키지로는 이 포크가 설치되지 않습니다.
+> - 대상은 **OpenCode 2.0.18**입니다. OpenCode 1.x에서는 동작하지 않습니다.
+> - 원본의 라이선스와 고지([LICENSE.md](LICENSE.md))가 그대로 적용됩니다.
 
+## 목차
 
-> [!NOTE]
->
-> [![Sisyphus Labs - Meet Dori. Not a demo. Subscribes to everything.](./.github/assets/sisyphuslabs.png?v=4)](https://sisyphuslabs.ai)
-> > **OmO is maintained by Jobdori, the AI assistant shown above. Meet your own Jobdori, Dori. <br />Join the waitlist [here](https://sisyphuslabs.ai).**
+- [포함된 기능](#포함된-기능)
+- [요구 사항](#요구-사항)
+- [설치: macOS / Linux](#설치-macos--linux)
+- [설치: Windows (WSL2)](#설치-windows-wsl2)
+- [설치 확인](#설치-확인)
+- [선택 기능 켜기](#선택-기능-켜기)
+- [사용 흐름](#사용-흐름)
+- [업데이트](#업데이트)
+- [제거](#제거)
+- [문제 해결](#문제-해결)
+- [검증 범위와 한계](#검증-범위와-한계)
+- [출처와 라이선스](#출처와-라이선스)
 
-> [!TIP]
-> Be with us!
->
-> | [<img alt="Discord link" src="https://img.shields.io/discord/1452487457085063218?color=5865F2&label=discord&labelColor=black&logo=discord&logoColor=white&style=flat-square" width="156px" />](https://discord.gg/PUwSMR9XNk) | Join our [Discord community](https://discord.gg/PUwSMR9XNk) to connect with contributors and fellow `oh-my-openagent` users. |
-> | :-----| :----- |
-> | [<img alt="X link" src="https://img.shields.io/badge/Follow-%40justsisyphus-00CED1?style=flat-square&logo=x&labelColor=black" width="156px" />](https://x.com/justsisyphus) | Updates for `oh-my-openagent` used to be posted on my X account. <br /> Since it was mistakenly suspended, [@justsisyphus](https://x.com/justsisyphus) now posts updates on my behalf. |
-> | [<img alt="GitHub Follow" src="https://img.shields.io/github/followers/code-yeongyu?style=flat-square&logo=github&labelColor=black&color=24292f" width="156px" />](https://github.com/code-yeongyu) | Follow [@code-yeongyu](https://github.com/code-yeongyu) on GitHub for more projects. |
+## 포함된 기능
 
-<!-- <CENTERED SECTION FOR GITHUB DISPLAY> -->
+| 영역 | 내용 |
+| --- | --- |
+| 에이전트 | Sisyphus, Hephaestus, Prometheus, Atlas, Sisyphus-Junior, Explore, Librarian, Oracle, Metis, Momus, Multimodal-Looker |
+| 위임 | `task`(카테고리/서브에이전트), `call_omo_agent`, `look_at`, 백그라운드 실행과 `bg_` 작업 ID, `background_output`/`background_cancel`, 불안정 모델 감시 실행 |
+| 워크플로 | ultrawork, `/ulw-execute`(Prometheus → Atlas), 최종 검토(final wave), `/goal`, 할 일 이어하기, `/stop-continuation` |
+| Team | `team_*` 도구, `/hyperplan`, 메일박스·공유 작업, 멤버별 **네이티브 worktree 격리**, 서버 재시작 후 복구 |
+| 긴 대화 | 선제 압축, 압축 문맥 보존(목표·계획·위임 세션), 압축 전용 모델, 도구 출력 동적 절단 |
+| 모델 정책 | 런타임 폴백, 요구 모델 체인 폴백, 무응답 자식 워치독, ultrawork 전용 모델 |
+| 명령·스킬 | OMO 내장 명령, Claude 명령/스킬 가져오기(`!`셸·`@`파일·`$ARGUMENTS[N]`·subtask), 스킬 MCP |
+| 기타 | 규칙·README 주입, 주석 검사, 해시라인 편집, 모니터 도구, 세션 검색, Claude Code 훅 |
 
-<div align="center">
+기능별 상세 동작과 기존 플러그인과의 차이는 [호환성 문서](docs/opencode2-compatibility.md)에 있습니다.
 
-<a href="https://github.com/code-yeongyu/oh-my-openagent#oh-my-openagent"><img src="./.github/assets/omo-icon-light.svg" alt="OmO" width="200" /></a>
+## 요구 사항
 
-[![Oh My OpenAgent](./.github/assets/hero.jpg)](https://github.com/code-yeongyu/oh-my-openagent#oh-my-openagent)
+| 항목 | 버전 / 설명 |
+| --- | --- |
+| OpenCode | **2.0.18** (`@opencode/cli`) |
+| Git | 저장소 복제와 Team worktree에 필요 |
+| Bun | 1.4.2로 빌드·검증했습니다 |
+| Node.js + npm | 20 이상. OpenCode CLI 설치와 첫 빌드(내장 LSP 도구 의존성 설치)에 사용 |
+| 모델 공급자 | OpenCode에 로그인한 공급자 계정 또는 API 키 |
 
-[![Preview](./.github/assets/omo.png)](https://github.com/code-yeongyu/oh-my-openagent#oh-my-openagent)
+## 설치: macOS / Linux
 
-</div>
+**1. OpenCode 2.0.18 설치**
 
-> This is oh-my-openagent, running Team Mode. With Kimi K3 and GPT-5.6 Sol.
+```bash
+npm install -g @opencode/cli@2.0.18
+```
 
-> Anthropic [**blocked OpenCode because of us.**](https://x.com/thdxr/status/2010149530486911014) **Yes, this is true.**
-> They want you locked in. Claude Code is a nice prison, but it's still a prison.
->
-> You don't need to pay $200 for 2 hours of work.
-> The future isn't picking one winner; it's orchestrating them all. Models get cheaper every month. Smarter every month. No single provider will dominate. We're building for that open market, not their walled gardens.
+```bash
+opencode --version
+```
 
-<div align="center">
+`opencode v2.0.18`이 출력되면 됩니다.
 
-[![GitHub Release](https://img.shields.io/github/v/release/code-yeongyu/oh-my-openagent?color=369eff&labelColor=black&logo=github&style=flat-square)](https://github.com/code-yeongyu/oh-my-openagent/releases)
-[![npm downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fomo.dev%2Fapi%2Fnpm-downloads&style=flat-square)](https://www.npmjs.com/package/oh-my-opencode)
-[![GitHub Contributors](https://img.shields.io/github/contributors/code-yeongyu/oh-my-openagent?color=c4f042&labelColor=black&style=flat-square)](https://github.com/code-yeongyu/oh-my-openagent/graphs/contributors)
-[![GitHub Forks](https://img.shields.io/github/forks/code-yeongyu/oh-my-openagent?color=8ae8ff&labelColor=black&style=flat-square)](https://github.com/code-yeongyu/oh-my-openagent/network/members)
-[![GitHub Stars](https://img.shields.io/github/stars/code-yeongyu/oh-my-openagent?color=ffcb47&labelColor=black&style=flat-square)](https://github.com/code-yeongyu/oh-my-openagent/stargazers)
-[![GitHub Issues](https://img.shields.io/github/issues/code-yeongyu/oh-my-openagent?color=ff80eb&labelColor=black&style=flat-square)](https://github.com/code-yeongyu/oh-my-openagent/issues)
-[![License](https://img.shields.io/badge/license-SUL--1.0-white?labelColor=black&style=flat-square)](https://github.com/code-yeongyu/oh-my-openagent/blob/dev/LICENSE.md)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/code-yeongyu/oh-my-openagent)
-[![Docs](https://img.shields.io/badge/docs-omo.dev-369eff?labelColor=black&logo=readthedocs&logoColor=white&style=flat-square)](https://omo.dev/docs)
+**2. 이 저장소 복제**
 
-[English](README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [简体中文](README.zh-cn.md)
+```bash
+git clone https://github.com/Loxia106/oh-my-openagent.git ~/oh-my-openagent
+```
 
-</div>
+```bash
+cd ~/oh-my-openagent && bun install --ignore-scripts --frozen-lockfile
+```
 
-<!-- </CENTERED SECTION FOR GITHUB DISPLAY> -->
+기본 브랜치가 `codex/opencode2-compat`이므로 별도 브랜치 지정은 필요 없습니다.
 
-## Reviews
+**3. 빌드하고 OpenCode에 등록**
 
-> "It made me cancel my Cursor subscription. Unbelievable things are happening in the open source community." - [Arthur Guiot](https://x.com/arthur_guiot/status/2008736347092382053?s=20)
+모든 프로젝트에서 쓰려면 전역 설정 디렉터리에 등록합니다. `XDG_CONFIG_HOME`을 바꾸지 않았다면 `~/.config/opencode`입니다.
 
-> "If Claude Code does in 7 days what a human does in 3 months, Sisyphus does it in 1 hour. It just works until the task is done. It is a discipline agent." <br/>- B, Quant Researcher
+```bash
+bun run install:opencode2 -- --config-dir ~/.config/opencode
+```
 
-> "Knocked out 8000 eslint warnings with Oh My Opencode, just in a day" <br/>- [Jacob Ferrari](https://x.com/jacobferrari_/status/2003258761952289061)
+특정 프로젝트에서만 쓰려면 대신 이렇게 합니다.
 
-> "I converted a 45k line tauri app into a SaaS web app overnight using Ohmyopencode and ralph loop. Started with interview me prompt, asked it for ratings and recommendations on the questions. It was amazing to watch it work and to wake up this morning to a mostly working website!" - [James Hargis](https://x.com/hargabyte/status/2007299688261882202)
+```bash
+bun run install:opencode2 -- --project /절대/경로/작업프로젝트
+```
 
-> "use oh-my-opencode, you will never go back" <br/>- [d0t3ch](https://x.com/d0t3ch/status/2001685618200580503)
+- 설치 명령은 `dist/opencode2/`를 빌드합니다.
+- 대상 폴더의 `opencode.jsonc`(또는 기존 `opencode.json`)의 `plugins`에 그 절대 경로를 추가합니다.
+- `default_agent`가 없을 때만 `sisyphus`로 설정합니다.
+- 기존 설정 파일은 수정하기 전에 백업합니다.
 
-> "I haven't really been able to articulate exactly what makes it so great yet, but the development experience has reached a completely different dimension." - [
-苔硯:こけすずり](https://x.com/kokesuzuri/status/2008532913961529372?s=20)
+**4. OpenCode 백그라운드 서버 재시작**
 
-> "Experimenting with open code, oh my opencode and supermemory this weekend to build some minecraft/souls-like abomination."
-> "Asking it to add crouch animations while I go take my post-lunch walk. [Video]" - [MagiMetal](https://x.com/MagiMetal/status/2005374704178373023)
-
-> "You guys should pull this into core and recruit him. Seriously. It's really, really, really good." <br/>- Henning Kilset
-
-> "Hire @yeon_gyu_kim if you can convince him, this dude has revolutionized opencode." <br/>- [mysticaltech](https://x.com/mysticaltech/status/2001858758608376079)
-
-> "Oh My OpenCode Is Actually Insane" - [YouTube - Darren Builds AI](https://www.youtube.com/watch?v=G_Snfh2M41M)
-
----
-
-# Oh My OpenAgent
-
-You're juggling Claude Code, Codex, and random OSS models. Configuring each one. Debugging agents.
-
-We did the work. Tested everything. Kept what actually shipped.
-
-Install oh-my-openagent. Type `ultrawork`. Done.
-
-
-## Installation
-
-### Install this fork on OpenCode 2.0.18
-
-This branch is installed from source, not from npm. It targets OpenCode **2.0.18** (the native `@opencode/cli` package).
-
-**Requirements:** OpenCode 2.0.18, Git, [Bun](https://bun.sh) (built and verified with 1.4.2), and Node.js 20+ with npm (the first build installs the bundled LSP tool's dependencies).
-
-1. Install OpenCode 2.0.18 and check the version.
-
-   ```sh
-   npm install -g @opencode/cli@2.0.18
-   opencode --version   # opencode v2.0.18
-   ```
-
-2. Clone this branch and install its dependencies.
-
-   ```sh
-   git clone --branch codex/opencode2-compat https://github.com/Loxia106/oh-my-openagent.git
-   cd oh-my-openagent
-   bun install --ignore-scripts --frozen-lockfile
-   ```
-
-3. Build and register the plugin for one project, or for every project through an OpenCode config directory. Choose exactly one target; use absolute paths.
-
-   ```sh
-   bun run install:opencode2 -- --project /absolute/path/to/your/project
-   # or: bun run install:opencode2 -- --config-dir /absolute/path/to/opencode-config
-   ```
-
-   The command builds `dist/opencode2/`, adds its absolute path to `plugins` in that directory's `opencode.jsonc` (or existing `opencode.json`), and sets `default_agent` to `sisyphus` only when none is set. An existing config file is backed up before it is edited.
-
-4. Restart the OpenCode background service so it loads the plugin, then start OpenCode in the project.
-
-   ```sh
-   opencode service restart
-   opencode /absolute/path/to/your/project
-   ```
-
-   Sisyphus is the default agent; Hephaestus, Prometheus and Atlas are selectable as primary agents. Sign in to your model providers with `opencode auth` as usual; this installer does not configure providers or API keys.
-
-**Keep the checkout.** The registered path points into this clone, and the bundle loads SDK/UI packages from its `node_modules`. Do not delete or move the clone; if you move it, rerun step 3 from the new location.
-
-**Optional features** are enabled in the project's `.omo/omo.jsonc` under `"[opencode]"`, for example `team_mode.enabled` for Team/Hyperplan, `goal.enabled` for `/goal`, `experimental.preemptive_compaction`, `runtime_fallback` and `hashline_edit`. See the [Korean setup guide](docs/opencode2-quickstart.ko.md) for the full list and the [compatibility matrix](docs/opencode2-compatibility.md) for each option's behavior.
-
-**Update:**
-
-```sh
-cd oh-my-openagent
-git pull --ff-only
-bun install --ignore-scripts --frozen-lockfile
-bun run install:opencode2 -- --project /absolute/path/to/your/project
+```bash
 opencode service restart
 ```
 
-**Uninstall:** remove the `.../oh-my-openagent/dist/opencode2` entry from `plugins` (and `default_agent` if the installer added it) in the `opencode.jsonc` you targeted, run `opencode service restart`, then delete the clone.
+**5. 모델 공급자 로그인**
 
-What was verified, and what differs from the OpenCode 1.x plugin, is in the [agent pipeline verification](docs/opencode2-agent-pipelines.md) and [compatibility matrix](docs/opencode2-compatibility.md).
+`opencode auth`로 공급자에 로그인합니다. 하위 명령은 `opencode auth --help`에서 확인할 수 있습니다. 이 포크의 설치 명령은 공급자나 API 키를 설정하지 않습니다.
 
-### Upstream editions
+> [!WARNING]
+> 설치 경로는 **복제한 저장소의 절대 경로**로 등록되며, 플러그인은 저장소의 `node_modules`를 사용합니다. 저장소를 지우거나 옮기지 마세요. 옮겼다면 새 위치에서 3~4단계를 다시 실행하면 됩니다.
 
-oh-my-openagent ships in three editions of the same product: two plugins that load into a host you already run, plus one standalone edition.
+## 설치: Windows (WSL2)
 
-**Ultimate Edition (omo for OpenCode)** is the full omo. 11 agents, 54+ lifecycle hooks, 4 built-in MCPs (websearch, context7, grep_app, lsp), all slash commands, Team Mode, `/goal`, ultrawork. Hashline edits are opt-in (`hashline_edit: true`).
+OpenCode와 이 플러그인은 **WSL2의 Linux 안에서** 설치하고 실행합니다. Windows용 OpenCode는 WSL 안의 플러그인 경로를 불러올 수 없습니다.
 
-**Light Edition (omo for Codex CLI)** carries the portable components that fit Codex's plugin system: `rules`, `comment-checker`, `git-bash`, `lsp`, `ultrawork`, `ulw-loop`, `ulw-execute-continuation`, and `telemetry` at the core, plus `teammode` and supporting components (`bootstrap`, `lcx`, and more), plugin-scoped MCPs for `grep_app`, `context7`, `git_bash`, and `lsp`, and the shared `ast-grep` skill. It installs Codex agent TOMLs into `~/.codex/agents/`. There are no OpenCode `team_*` tools; Codex CLI's own spawn/collaboration surface does that work.
+**1. WSL2와 Ubuntu 설치** — PowerShell을 관리자 권한으로 열고 실행한 뒤 재부팅합니다.
 
-**OmO Native (standalone)** is the `omo` command with the OMO extension built in. It installs from `omo-ai` and loads into neither OpenCode nor Codex. Already on the OpenCode edition? See [Migrating from OpenCode](docs/guide/migrating-from-opencode.md).
-
-Pick the edition(s) you want.
-
-### One-line install
-
-| You want | Run | What lands on disk |
-| :--- | :--- | :--- |
-| **Ultimate** (OpenCode) | `bunx oh-my-openagent install` (TUI walks you through it) | Plugin registered in `opencode.json` + agent/model config + provider auth prompts |
-| **Light** (Codex CLI) | `npx lazycodex-ai install` | `~/.codex/plugins/cache/sisyphuslabs/omo/` + local Codex marketplace cache + `~/.codex/config.toml` marketplace/plugin/agent blocks + optional autonomous permissions + component CLIs in `~/.local/bin` |
-| **Both** | `bunx oh-my-openagent install --platform=both` | Both of the above |
-| **OmO Native** | `bun add -g omo-ai`, then `omo` | The `omo` command: pinned senpi engine with the OMO extension built in. See the [install guide](docs/guide/installation.md#omo-native-omo-via-omo-ai). |
-
-`lazycodex-ai` defaults to the Codex Light installer and runs through Node/npm. `--platform` on the shared `omo-agent-toolkit` CLI still defaults to `opencode` (Ultimate).
-
-### Which edition should I pick?
-
-Already on OpenCode, or want the most-tested path? **Ultimate**. Already on Codex CLI? **Light**. Want one command without installing a host first? **OmO Native**, which ships a pinned senpi engine with OMO built in; bun is the recommended runtime for it. Do not install plain `omo` from npm; that is an unrelated package by a different author.
-
-### For Humans
-
-**Strongly recommended: let an LLM agent install this for you.** The Ultimate edition setup involves subscription detection, model selection across 11 agents, and per-provider authentication, and humans fat-finger these. An LLM agent reads the full guide and walks every step correctly.
-
-Paste this prompt into Claude Code, AmpCode, Cursor, or any agent:
-
-```
-Install and configure oh-my-openagent by following the instructions here:
-https://raw.githubusercontent.com/code-yeongyu/oh-my-openagent/refs/heads/dev/docs/guide/installation.md
+```powershell
+wsl --install -d Ubuntu
 ```
 
-If you only want the **Light edition** (Codex CLI), the installer asks whether to configure Codex for autonomous full-permissions mode. You can run it yourself in one line:
+이후 작업은 모두 **Ubuntu 터미널**에서 합니다.
+
+**2. 기본 도구 설치**
 
 ```bash
-npx lazycodex-ai install
-# non-interactive recommended mode:
-npx lazycodex-ai install --no-tui --codex-autonomous
+sudo apt update && sudo apt install -y git curl unzip ca-certificates
 ```
 
-For the Light edition, Bun is not required. Use `npx lazycodex-ai install` from a Node/npm environment. Global installation is not officially supported; the installer writes the Codex plugin into `~/.codex/`.
-
-### For LLM Agents
-
-Fetch the full guide and follow it step by step:
+**3. Node.js 22 설치** (Ubuntu 기본 저장소의 Node.js는 버전이 낮을 수 있습니다)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/code-yeongyu/oh-my-openagent/refs/heads/dev/docs/guide/installation.md
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 ```
 
-The guide covers: platform selection, the subscription interview, provider authentication (Anthropic / Google / Copilot / Z.ai / OpenCode Zen), the agent-to-model matching matrix, modes (`ultrawork`, `team`, `hyperplan`), slash commands, the Light edition's Codex components, Team Mode, and uninstall. Don't summarize it; read it end to end.
-
-### Note on package and command names
-
-The published npm package and CLI binary are still named `oh-my-opencode` (dual-published as `oh-my-openagent` during the rename transition). Inside `opencode.json`, the compatibility layer prefers the plugin entry `oh-my-openagent`, while legacy `oh-my-opencode` entries still load with a warning. Runtime config is `~/.omo/omo.jsonc` plus walked project `.omo/omo.jsonc`. Legacy `oh-my-openagent.json[c]` / `oh-my-opencode.json[c]` files are imported once by the migration engine and are not read afterward.
-
-The recommended `bunx`/`npx` invocation is `oh-my-openagent install` (or the original `oh-my-opencode install`). Once installed, the short command is `omo-agent-toolkit`. The `omo` bin was removed from these packages in this major release; the name now belongs to OmO Native, installed with `bun add -g omo-ai` (bun is the recommended runtime). Do **not** use `bunx omo` or `npx omo`: `omo` on npm is a different, unrelated package by a different author, and those commands resolve to it. OmO Native's package name is `omo-ai`. `lazycodex-ai` is a single-purpose Node/npm installer package: `npx lazycodex-ai install` routes directly to the Codex Light installer. It is not the Codex marketplace name (the marketplace repository is `code-yeongyu/lazycodex`). Codex sees marketplace `sisyphuslabs` and plugin `omo`, enabled as `omo@sisyphuslabs`.
-
-### Telemetry
-
-Anonymous telemetry is enabled by default to track active installations (DAU/WAU/MAU). For both products, a single event is sent **at most once per UTC day per machine** using a SHA256-hashed installation identifier (never the raw hostname), and PostHog person profiles are not created. The main plugin emits `omo_daily_active` from plugin load (`plugin_loaded`) and CLI run (`run_started`) sources; the Codex CLI Light edition emits `omo_codex_daily_active` from two sources (`install_completed` and `session_start`).
-
-Opt out per product. For the main plugin, set `"telemetry": false` in the oh-my-openagent config, or export `OMO_DISABLE_POSTHOG=1` or `OMO_SEND_ANONYMOUS_TELEMETRY=0`. For the Codex CLI Light edition, export `OMO_CODEX_DISABLE_POSTHOG=1` or `OMO_CODEX_SEND_ANONYMOUS_TELEMETRY=0`; the global flags also disable Codex.
-
-See [Privacy Policy](docs/legal/privacy-policy.md) and [Terms of Service](docs/legal/terms-of-service.md).
-
----
-
-## Skip This README
-
-We're past the era of reading docs. Just paste this into your agent:
-
-```
-Read this and tell me why it's not just another boilerplate: https://raw.githubusercontent.com/code-yeongyu/oh-my-openagent/refs/heads/dev/README.md
+```bash
+sudo apt install -y nodejs
 ```
 
+`sudo` 없이 전역 npm 패키지를 설치하도록 경로를 지정합니다.
 
-## ROADMAP
+```bash
+mkdir -p ~/.npm-global && npm config set prefix ~/.npm-global && echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> ~/.bashrc
+```
 
-We are restructuring the codebase to support multiple agent harnesses (OpenCode, Codex, Pi, Claude Code, and others). The most urgent work is the package layering refactor: separating pure TypeScript core logic, MCP servers, skills, and adapter shims into distinct layers so the same logic can be reused across harnesses without duplication.
+**4. Bun 1.4.2 설치**
 
-If you want to contribute, read the [ROADMAP](./ROADMAP.md) first. PRs related to this refactor should use the `ROADMAP` label so they are easy to track.
+```bash
+curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.2"
+```
 
-## Highlights
+```bash
+source ~/.bashrc
+```
 
-### 🪄 `ultrawork`
+**5. OpenCode 설치와 플러그인 등록** — 나머지는 [macOS / Linux 설치](#설치-macos--linux)의 1~5단계와 같습니다.
 
-You're actually reading this? Wild.
+```bash
+npm install -g @opencode/cli@2.0.18
+```
 
-Install. Type `ultrawork` (or `ulw`). Done.
+```bash
+git clone https://github.com/Loxia106/oh-my-openagent.git ~/oh-my-openagent
+```
 
-Everything below, every feature, every optimization: you don't need to know any of it. It just works.
+```bash
+cd ~/oh-my-openagent && bun install --ignore-scripts --frozen-lockfile
+```
 
-Even with only a [ChatGPT subscription ($20)](https://chatgpt.com/), a [Kimi Code subscription ($19)](https://www.kimi.com/code) or the [GLM Coding Plan ($10)](https://z.ai/subscribe), `ultrawork` works well (this project is not affiliated; these are personal recommendations). If you're eligible for pay-per-token, Kimi and GLM models won't cost much either.
+```bash
+bun run install:opencode2 -- --config-dir ~/.config/opencode
+```
 
-|       | Feature                                                  | Edition  | What it does                                                                                                                                                                                                     |
-| :---: | :------------------------------------------------------- | :------: | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-|   🤖   | **Discipline Agents**                                    | Ultimate | The main agent orchestrates the architect consult, Librarian, Explore and category workers. A full AI dev team in parallel.                                                                                     |
-|   🧩   | **Codex CLI Light Edition**                              | Light    | Portable OMO components (rules, comment-checker, git-bash, LSP, ultrawork, ulw-loop, ulw-execute continuation, telemetry, teammode, and more) running inside OpenAI Codex CLI. Install via `npx lazycodex-ai install`.             |
-|   👥   | **Team Mode** (opt-in)                                   | Ultimate | Lead agent + up to 8 parallel members, real-time tmux visualization, dedicated `team_*` tools. Powers `hyperplan` (5 hostile critics) and `security-research` (3 hunters + 2 PoC engineers). [Docs →](docs/guide/team-mode.md) |
-|   ⚡   | **`ultrawork` / `ulw`**                                  | Both     | One word. Every agent activates. Doesn't stop until done.                                                                                                                                                        |
-|   🚪   | **[IntentGate](https://factory.ai/news/terminal-bench)** | Ultimate | Keyword detection for `ultrawork`/`ulw`, `team`, and `hyperplan` (does not semantically classify intent). (Light edition only recognises the `ultrawork`/`ulw` keyword.)                                                       |
-|   🔗   | **Hash-Anchored Edit Tool**                              | Ultimate | Hashline (`LINE#ID`) edit/read tagging. Opt-in: set `hashline_edit: true` in `~/.omo/omo.jsonc`. Zero stale-line errors. Inspired by [oh-my-pi](https://github.com/can1357/oh-my-pi). [The Harness Problem →](https://blog.can.ac/2026/02/12/the-harness-problem/) |
-|   🛠️   | **LSP integration**                                      | Both     | Diagnostics, navigation, symbols, workspace rename. IDE precision for agents. Same LSP MCP server in both editions.                                                                                              |
-|   🔎   | **AST-Grep**                                             |   Both   | Pattern-aware code search and rewriting across 25 languages. Both editions use the shared `ast-grep` skill with a provisioned `sg`.                                                                                                                                                     |
-|   🧠   | **Background Agents**                                    | Ultimate | Fire 5+ specialists in parallel. Context stays lean. Results when ready.                                                                                                                                         |
-|   📚   | **Built-in MCPs** (web/docs/code search)                 | Ultimate | websearch (Exa), context7 (docs), grep_app (GitHub search), lsp. Always on.                                                                                                                                 |
-|   🔁   | **Goal / `/goal`**                                       | Ultimate | `/goal` sets a persistent thread objective. Idle continuation runs only when `goal.enabled` is true (default false).                                                                                        |
-|   ✅   | **Todo Enforcer**                                        | Ultimate | Agent goes idle? System yanks it back. Your task gets done, period.                                                                                                                                              |
-|   💬   | **Comment Checker**                                      | Both     | No AI slop in comments. Code reads like a senior wrote it.                                                                                                                                                       |
-|   📐   | **Rules Injection** (`AGENTS.md` / `.omo/rules/**`)      | Both     | Project rules and AGENTS.md auto-loaded into the agent's context at every prompt.                                                                                                                                |
-|   🎯   | **Ulw Loop**                                            | Light    | Codex component + CLI for durable multi-goal orchestration with evidence audit. On OpenCode, use **Goal / `/goal`** instead.                                                                                     |
-|   🖥️   | **Tmux Integration**                                     | Ultimate | Full interactive terminal. REPLs, debuggers, TUIs. All live.                                                                                                                                                     |
-|   🔌   | **Claude Code Compatible**                               | Ultimate | Your hooks, commands, skills, MCPs, and plugins? All work here.                                                                                                                                                  |
-|   🧬   | **Skill-Embedded MCPs**                                  | Ultimate | Skills carry their own MCP servers. No context bloat.                                                                                                                                                            |
-|   📋   | **Ultrawork Planner**                                    | Ultimate | Interview-mode strategic planning before execution starts.                                                                                                                                                         |
-|   🔍   | **`/init-deep`**                                         | Ultimate | Auto-generates hierarchical `AGENTS.md` files throughout your project. Great for both token efficiency and your agent's performance.                                                                             |
+```bash
+opencode service restart
+```
 
-> **Edition legend.** **Ultimate** = OpenCode-only (`bunx oh-my-openagent install`). **Light** = Codex CLI-only (`npx lazycodex-ai install`). **Both** = shipped in both editions, often with slightly different implementations.
+WSL에서 지킬 점:
 
-### Discipline Agents
+- **저장소와 작업 프로젝트를 모두 Linux 파일시스템(`~/...`)에 두세요.** `/mnt/c/...` 아래에서는 파일 감시, 권한, 심볼릭 링크, git worktree가 느리거나 불안정합니다.
+- Windows 쪽 폴더에서 작업해야 한다면 저장소를 WSL 안으로 복제해 쓰는 편이 안전합니다.
+- 브라우저 로그인이 필요한 공급자는 WSL이 띄우는 URL을 Windows 브라우저에서 열어 인증합니다.
+- VS Code를 쓴다면 WSL 확장으로 Ubuntu에 접속한 뒤 그 터미널에서 `opencode`를 실행합니다.
 
-**The main agent** runs on your session model and is your orchestrator. It plans, delegates to specialists, and drives tasks to completion with aggressive parallel execution. It doesn't stop halfway. Give it a goal, not a recipe: it explores the codebase, researches patterns, and executes end-to-end without hand-holding. *The Legitimate Craftsman.*
+## 설치 확인
 
-**The Ultrawork Planner** (`/ulw-plan`) is your strategic planner. Interview mode: it asks questions, identifies scope, and builds a detailed plan before a single line of code is touched. `/ulw-execute` then carries that plan out in the same session.
+작업할 프로젝트 폴더에서 OpenCode를 실행합니다.
 
-Every prompt preset is tuned to its model's specific strengths. No manual model juggling. [Learn more →](docs/guide/overview.md)
+```bash
+opencode ~/작업프로젝트
+```
 
-> Anthropic [blocked OpenCode because of us.](https://x.com/thdxr/status/2010149530486911014) That's why we call the main agent "The Legitimate Craftsman." The irony is intentional.
->
-> We run best on Opus or Kimi K3, but Kimi K3 + GPT-5.6 Sol already beats vanilla Claude Code. Zero config needed.
+- 기본 에이전트가 **Sisyphus**로 표시되고, 에이전트 목록에 Hephaestus·Prometheus·Atlas가 보이면 정상입니다.
+- 명령 목록에 `/ulw-execute`, `/goal`, `/hyperplan` 같은 OMO 명령이 보여야 합니다.
+- 보이지 않으면 [문제 해결](#문제-해결)을 참고하세요.
 
-### Team Mode
+## 선택 기능 켜기
 
-One agent is fast. A coordinated team is *devastating*.
-
-**Team Mode** turns oh-my-openagent from "one agent with subagents" into a real multi-agent system. A lead agent orchestrates a team of category-specialized members, all running **in parallel** and communicating through dedicated tools (`team_create`, `team_send_message`, `team_task_create`, `team_status`, ...). Watch every member work simultaneously in a tmux layout with focus + grid windows.
+작업 프로젝트의 `.omo/omo.jsonc`(또는 사용자 전역 OMO 설정)의 `"[opencode]"` 블록에서 켭니다.
 
 ```jsonc
-// ~/.omo/omo.jsonc  (or project .omo/omo.jsonc)
 {
-  "team_mode": {
-    "enabled": true,
-    "max_parallel_members": 4,
-    "tmux_visualization": true
+  "[opencode]": {
+    "team_mode": { "enabled": true },
+    "goal": { "enabled": true },
+    "experimental": { "preemptive_compaction": true },
+    "runtime_fallback": { "enabled": true }
   }
 }
 ```
 
-Restart opencode and the `team_*` tool family appears. Two skills already ride on top of it. `hyperplan` sends 5 hostile agents at your plan from orthogonal angles before a single line of code is written. `security-research` runs 3 vulnerability hunters and 2 PoC engineers over your codebase in parallel, with severity calibrated by *actual exploitability*.
+| 설정 | 효과 |
+| --- | --- |
+| `team_mode.enabled` | Team 도구와 `/hyperplan` |
+| `goal.enabled` | `/goal`과 목표 도구. `default_mode.goal: true`면 첫 입력을 자동 목표로 설정 |
+| `experimental.preemptive_compaction` | 컨텍스트 78%에서 자동 압축 |
+| `experimental.aggressive_truncation` | 압축 요청 안의 큰 도구 결과를 줄임 |
+| `agents.<이름>.compaction.model` | 압축 요약 전용 모델 |
+| `agents.<이름>.ultrawork` | `ultrawork`/`ulw` 턴 전용 모델·변형 |
+| `runtime_fallback` | 공급자 오류 시 폴백 모델로 전환(`timeout_seconds`로 무응답 폴백 차단) |
+| `model_fallback` | 에이전트 기본 요구 모델 체인을 폴백으로 사용 |
+| `monitor.enabled` | `monitor_*` 도구 |
+| `hashline_edit` | `read`/`edit`를 `LINE#ID` 앵커 방식으로 전환 |
 
-> **Off by default. Enable it when you want it.** [Full Team Mode guide →](docs/guide/team-mode.md)
+전체 옵션과 동작은 [한국어 설치·실행 안내](docs/opencode2-quickstart.ko.md)와 [호환성 문서](docs/opencode2-compatibility.md)에 있습니다.
 
-### Agent Orchestration
+## 사용 흐름
 
-When the main agent delegates to a subagent, it doesn't pick a model. It picks a **category**. The category maps automatically to the right model:
+- **일반 작업:** Sisyphus(또는 Hephaestus)에게 요청합니다. Explore·Librarian 조사, Junior 구현, Oracle 검토 결과를 부모 대화가 이어받습니다. 프롬프트에 `ultrawork`(`ulw`)를 넣으면 최대 강도로 진행합니다.
+- **계획 후 실행:** Prometheus에서 계획을 세우고, `/ulw-execute`로 Atlas 실행 흐름에 넘깁니다. 최종 검토(final wave)를 통과해도 **사용자의 완료 승인**이 있어야 끝납니다.
+- **Team:** `team_mode`를 켠 뒤 `/hyperplan`을 쓰거나 리더에게 팀 구성을 요청합니다.
+  - 멤버 스펙에 `worktree: true`를 주면 그 멤버는 OpenCode 네이티브 worktree(`<프로젝트>/.omo/worktrees`)에서 격리되어 작업합니다.
+  - 멤버의 변경은 리더가 통합합니다.
+  - `team_delete`는 변경이 남은 worktree를 지우지 않고 경로만 알려 줍니다.
+- **자동 이어하기 중지:** `/stop-continuation`
 
-| Category             | What it's for                      |
-| :------------------- | :--------------------------------- |
-| `visual-engineering` | Visual design, UI/UX, frontend     |
-| `deep`               | Deep work across visual and technical domains |
-| `quick`              | Single-file changes, typos         |
-| `ultrabrain`         | Hard logic, architecture decisions |
-
-The agent says what kind of work it needs; the harness picks the right model. `ultrabrain` routes to GPT-6 Astra max (falling back to GPT-5.6 Sol), `deep-high` to GPT-6 Astra xhigh, and `deep-low` to GPT-5.6 Sol Fast medium (then GPT-5.6 Sol where the Fast tier is not served). You touch nothing.
-
-### Claude Code Compatibility
-
-You dialed in your Claude Code setup. Good.
-
-Every hook, command, skill, MCP, plugin works here unchanged. Full compatibility, including plugins.
-
-### World-Class Tools for Your Agents
-
-LSP, AST-Grep, Tmux, and MCP, actually integrated, not duct-taped together. LSP gives every agent `lsp_rename`, `lsp_goto_definition`, `lsp_find_references` and `lsp_diagnostics`, IDE precision included. AST-Grep does pattern-aware code search and rewriting across 25 languages. Tmux is a full interactive terminal, so REPLs, debuggers and TUI apps stay in session. MCP brings web search, official docs and GitHub code search, all baked in.
-
-### Skill-Embedded MCPs
-
-MCP servers eat your context budget. We fixed that.
-
-Skills bring their own MCP servers. They spin up on demand, scoped to the task, and go away when done. The context window stays small.
-
-### Codes Better. Hash-Anchored Edits
-
-The harness problem is real. Most agent failures aren't the model's fault; it's the edit tool.
-
-> *"None of these tools give the model a stable, verifiable identifier for the lines it wants to change... They all rely on the model reproducing content it already saw. When it can't - and it often can't - the user blames the model."*
->
-> <br/>- [Can Bölük, The Harness Problem](https://blog.can.ac/2026/02/12/the-harness-problem/)
-
-Inspired by [oh-my-pi](https://github.com/can1357/oh-my-pi), we built **Hashline**. When `hashline_edit` is enabled, every line the agent reads comes back tagged with a content hash:
-
-```
-11#VK| function hello() {
-22#XJ|   return "world";
-33#MB| }
-```
-
-The agent edits by referencing those tags. If the file has changed since the last read, the hash won't match and the edit is rejected before it can corrupt the file. No whitespace reproduction. No stale-line errors.
-
-### Deep Initialization. `/init-deep`
-
-Run `/init-deep`. It generates hierarchical `AGENTS.md` files:
-
-```
-project/
-├── AGENTS.md              ← project-wide context
-├── src/
-│   ├── AGENTS.md          ← src-specific context
-│   └── components/
-│       └── AGENTS.md      ← component-specific context
-```
-
-Agents auto-read relevant context. Zero manual management.
-
-### Planning. The Ultrawork Planner
-
-Complex task? Don't prompt and pray.
-
-The Ultrawork Planner (`/ulw-plan`) **interviews you like a real engineer**, identifies scope and ambiguities, and writes a reviewed plan to `.omo/plans/` before touching code. `/ulw-execute` then has the main agent execute that plan in the same session. The agent knows what it's building before it starts.
-
-### Skills
-
-Skills aren't just prompts. Each brings domain-tuned system instructions, embedded MCP servers on demand, and scoped permissions so agents stay in bounds.
-
-Built-ins include `playwright` (browser automation), `git-master` (atomic commits, rebase surgery) and `frontend` (design-first UI).
-
-Add your own under `.opencode/skills/*/SKILL.md` or `~/.config/opencode/skills/*/SKILL.md`.
-
-**Want the full feature breakdown?** See the **[Features Documentation](docs/reference/features.md)** for agents, hooks, tools, MCPs, and everything else in detail.
-
----
-
-> **New to oh-my-openagent?** Read the **[Overview](docs/guide/overview.md)** to understand what you have, or check the **[Orchestration Guide](docs/guide/orchestration.md)** for how agents collaborate.
-
-## Uninstallation
-
-Removing oh-my-openagent takes four steps.
-
-### Remove the plugin from your OpenCode config
-
-Edit `~/.config/opencode/opencode.json` (or `opencode.jsonc`) and remove either `"oh-my-openagent"` or the legacy `"oh-my-opencode"` entry from the `plugin` array:
+## 업데이트
 
 ```bash
-# Using jq
-jq '.plugin = [.plugin[] | select(. != "oh-my-openagent" and . != "oh-my-opencode")]' \
-    ~/.config/opencode/opencode.json > /tmp/oc.json && \
-    mv /tmp/oc.json ~/.config/opencode/opencode.json
+cd ~/oh-my-openagent && git pull --ff-only && bun install --ignore-scripts --frozen-lockfile
 ```
-
-### Remove configuration files (optional)
 
 ```bash
-# Remove the runtime config files
-rm -f ~/.omo/omo.jsonc ~/.omo/omo.json
-
-# Remove project config (if exists)
-rm -f .omo/omo.jsonc .omo/omo.json
-
-# Remove leftover legacy migration backups (if any)
-rm -f ~/.config/opencode/oh-my-openagent.jsonc ~/.config/opencode/oh-my-openagent.json \
-      ~/.config/opencode/oh-my-opencode.jsonc ~/.config/opencode/oh-my-opencode.json \
-      .opencode/oh-my-openagent.jsonc .opencode/oh-my-openagent.json \
-      .opencode/oh-my-opencode.jsonc .opencode/oh-my-opencode.json
+bun run install:opencode2 -- --config-dir ~/.config/opencode
 ```
-
-### Verify removal
 
 ```bash
-opencode --version
-# Plugin should no longer be loaded
+opencode service restart
 ```
 
-### Remove omo-codex (Codex CLI Light edition)
+설치할 때 `--project`를 썼다면 같은 옵션으로 다시 실행합니다.
 
-```bash
-npx lazycodex-ai uninstall
-# backward-compatible alias:
-npx lazycodex-ai cleanup
+## 제거
 
-omo-agent-toolkit uninstall --platform=codex
-# backward-compatible alias:
-omo-agent-toolkit cleanup --platform=codex
-```
+1. 설치 대상 `opencode.jsonc`의 `plugins`에서 `.../oh-my-openagent/dist/opencode2` 항목을 지웁니다. 설치 명령이 추가했다면 `default_agent`도 지웁니다.
+2. `opencode service restart`를 실행합니다.
+3. 복제한 저장소를 삭제합니다.
 
-The uninstall command removes managed `sisyphuslabs` Codex cache/marketplace state, strips `omo@sisyphuslabs` plugin and hook-state blocks from `~/.codex/config.toml` after writing a backup, and removes agent TOML links listed in the install manifest. If a specific project still has old project-local Codex plugin state, run the command from that project or pass `--project <path>`; it repairs known project-local `.codex/config.toml` conflicts and reports project-local `.codex` artifacts without deleting project-owned files.
+## 문제 해결
 
-## Features
+| 증상 | 확인할 것 |
+| --- | --- |
+| OMO 에이전트·명령이 보이지 않음 | `opencode service restart`를 했는지, `opencode.jsonc`의 `plugins` 경로가 실제 `dist/opencode2`를 가리키는지 확인 |
+| 저장소를 옮긴 뒤 동작하지 않음 | 새 위치에서 설치 명령을 다시 실행하고 서비스를 재시작 |
+| `task`·`look_at` 도구가 사라짐 | OpenCode 2의 복수형 `permissions` 배열을 쓰세요. 구형 단수형 `permission`의 `task`는 `subagent`로 바뀌어 OMO 도구가 숨겨질 수 있습니다 |
+| MCP 도구가 보이지 않음 | MCP는 CodeMode로 노출됩니다. `execute`와 해당 MCP 동작 권한이 모두 필요합니다 |
+| Team worktree 멤버가 바로 오류 | worktree 위치에서 OMO가 로드되지 않은 경우입니다. 기본 위치(`.omo/worktrees`)를 쓰거나 플러그인을 전역 설정에 등록하세요 |
+| WSL에서 느리거나 파일 변경을 못 잡음 | 저장소와 프로젝트를 `/mnt/c`가 아닌 `~/` 아래로 옮기세요 |
 
-Features you'll think should've always existed. Once you use them, you can't go back.
+## 검증 범위와 한계
 
-See the full [Features Documentation](docs/reference/features.md). The short version follows.
+- 기능마다 격리된 실제 OpenCode 2.0.18 호스트에서 QA 드라이버(`script/opencode2-*-qa.ts`)로 검증했습니다. 결과는 [에이전트 파이프라인 검증](docs/opencode2-agent-pipelines.md)에 있습니다.
+- QA는 로컬 모의 모델을 사용합니다. 연동과 전달이 되는지는 확인했지만, 실제 모델의 추론 품질이나 모든 외부 공급자와의 호환성까지 입증하지는 않습니다.
+- 알림·업데이트 안내·텔레메트리처럼 대화에 영향이 없는 기능은 의도적으로 뺐습니다. 남은 차이는 [호환성 문서](docs/opencode2-compatibility.md)에 정리했습니다.
 
-The main agent orchestrates; the Ultrawork Planner (`/ulw-plan`), the architect consult (architecture and debugging), Librarian (docs and code search), Explore (fast codebase grep) and the Multimodal Looker specialize, and background agents run several of them in parallel like a real dev team. LSP and AST tools cover refactoring, rename, diagnostics and AST-aware code search. The hash-anchored edit tool (opt-in via `hashline_edit: true`) validates `LINE#ID` references before applying every change, so edits are surgical and stale-line errors are gone.
+## 출처와 라이선스
 
-AGENTS.md, README.md and conditional rules are injected into context automatically. Claude Code hooks, commands, skills, agents and MCPs run unchanged. The built-in MCPs (websearch via Exa, context7 for docs, grep_app for GitHub search, lsp) are injected at runtime by the plugin, which is why they do not show up in `opencode mcp list` (see the [MCP docs](docs/reference/features.md#native-vs-plugin-injected-mcps)). Session tools list, read, search and analyze session history.
-
-Goal, the Todo Enforcer, the Comment Checker and Think Mode keep a run on track. `bunx oh-my-opencode doctor` checks plugin registration, config, models and environment. `fallback_models` can mix plain model strings with per-fallback object settings in the same array, agent prompts can load from files with `file://`, and sessions recover from session errors, context window limits and API failures on their own. Agent-model matching is part of the [Installation Guide](docs/guide/installation.md#step-5-understand-your-model-setup).
-
-## Configuration
-
-Opinionated defaults, adjustable if you insist.
-
-See the [Configuration Documentation](docs/reference/configuration.md). The short version follows.
-
-Config lives in the user file `~/.omo/omo.jsonc` plus walked project `.omo/omo.jsonc` files up to `$HOME`; the closest one wins, and legacy `oh-my-*` files are migrated once into `omo.jsonc`. JSONC is accepted, comments and trailing commas included. You can override models, temperatures, prompts and permissions for any agent, set concurrency limits for background tasks per provider or model, and turn any of the 54+ lifecycle hooks (61 with Team Mode) off through `disabled_hooks`.
-
-The main agent orchestrates with the Ultrawork Planner (`/ulw-plan`) and the Plan Consultant. Delegation goes through categories (`visual-engineering`, `ultrabrain`, `deep`, `artistry`, `quick`, `unspecified-low`, `unspecified-high`, `writing`, plus custom names). Built-in skills include `playwright` (browser automation) and `git-master` (atomic commits). The built-in MCPs (websearch via Exa, context7, grep_app, lsp) are runtime-injected and not shown in `opencode mcp list`; LSP support includes the refactoring tools. Experimental options cover aggressive truncation, preemptive compaction, and more.
-
-
-## Author's Note
-
-**Want the philosophy?** Read the [Ultrawork Manifesto](docs/manifesto.md).
-
----
-
-I burned through $24K in LLM tokens on personal projects. Tried every tool. Configured everything to death. OpenCode won.
-
-Every problem I hit, the fix is baked into this plugin. Install and go.
-
-If OpenCode is Debian/Arch, oh-my-openagent is Ubuntu/[Omarchy](https://omarchy.org/).
-
-Heavily influenced by [AmpCode](https://ampcode.com) and [Claude Code](https://code.claude.com/docs/overview). Features ported, often improved. Still building. It's **Open**Code.
-
-Other harnesses promise multi-model orchestration. We ship it. Stability too. And features that actually work.
-
-I'm this project's most obsessive user. Which model has the sharpest logic? Who's the debugging god? Who writes the best prose? Who dominates frontend, who owns backend, what's fastest for daily driving, what are competitors shipping?
-
-This plugin is the distillation. Take the best. Got improvements? PRs welcome.
-
-**Stop agonizing over harness choices.**
-**I'll research, steal the best, and ship it here.**
-
-Sounds arrogant? Have a better way? Contribute. You're welcome.
-
-No affiliation with any project or model mentioned. Just personal experimentation.
-
-The LazyCodex name is inspired by [LazyVim](https://github.com/LazyVim/LazyVim). The Ultragoal and UltraQA ideas come from [oh-my-codex](https://github.com/Yeachan-Heo/oh-my-codex), reimplemented from concept for OmO.
-
-99% of this project was built with OpenCode. I don't really know TypeScript, **but I personally reviewed and largely rewrote this doc.**
-
-## Loved by professionals at
-
-[Indent](https://indentcorp.com), makers of Spray (influencer marketing solution), vovushop (cross-border commerce platform) and vreview (AI commerce review marketing solution). [Google](https://google.com). [Microsoft](https://microsoft.com). [Vercel](https://vercel.com). [ELESTYLE](https://elestyle.jp), makers of elepay (multi-mobile payment gateway) and OneQR (mobile application SaaS for cashless solutions). [Deepgram](https://deepgram.com).
-
-*Special thanks to [@junhoyeo](https://github.com/junhoyeo) for this amazing hero image.*
+- 원본: [code-yeongyu/oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent) 5.0.0 기반, 5.0.1의 OpenCode 대화 라우팅 변경 반영
+- 라이선스: 원본 저장소의 [LICENSE.md](LICENSE.md)가 그대로 적용됩니다.
+- 이 포크의 변경 내역은 git 기록과 `docs/opencode2-*.md`에 있습니다.
