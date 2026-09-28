@@ -219,7 +219,7 @@ describe("createSisyphusJuniorAgentWithOverrides", () => {
 
     test("#given Claude model #when agent is created #then injects thinking", () => {
       // given
-      const override = { model: "anthropic/claude-sonnet-5" }
+      const override = { model: "anthropic/claude-sonnet-4-6" }
 
       // when
       const result = createSisyphusJuniorAgentWithOverrides(override)
@@ -227,6 +227,17 @@ describe("createSisyphusJuniorAgentWithOverrides", () => {
       // then
       expect(result.reasoningEffort).toBeUndefined()
       expect(result.thinking).toEqual({ type: "enabled", budgetTokens: 32000 })
+    })
+
+    test("#given adaptive-only Claude 5 model #when agent is created #then leaves thinking to the host", () => {
+      // given: claude-sonnet-5 rejects thinking.type "enabled" (Bedrock/Anthropic 400)
+      const override = { model: "amazon-bedrock/us.anthropic.claude-sonnet-5-20260801-v1:0" }
+
+      // when
+      const result = createSisyphusJuniorAgentWithOverrides(override)
+
+      // then
+      expect(result.thinking).toBeUndefined()
     })
 
     test("#given GLM reasoning model #when agent is created #then skips injected thinking", () => {

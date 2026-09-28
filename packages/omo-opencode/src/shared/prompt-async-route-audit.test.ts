@@ -57,6 +57,14 @@ const RAW_PROMPT_ALLOWLIST = new Map<string, string>([
     "native command gate coalesces identical command preparation and one prompt, distinguishes session arguments attachments and delivery, keeps a positive post-settlement hold for success and failure, and rejects after cleanup; focused tests exercise each invariant",
   ],
   [
+    path.join(SOURCE_ROOT, "v2", "team-mode", "manager.ts"),
+    "native Team manager prompts only member sessions it created: one initial prompt per admitted launch and, after an unmanaged restart, at most one resume for a member whose turn was orphaned (skipped once any execution starts); never the user's main session",
+  ],
+  [
+    path.join(SOURCE_ROOT, "v2", "custom-commands.ts"),
+    "Claude command handoffs: dispatches the user-declared send:true target once, armed per command invocation and consumed on that invocation's successful terminal event",
+  ],
+  [
     path.join(WORKSPACE_ROOT, "packages", "senpi-task", "src", "runners", "in-process", "child-handle.ts"),
     "drives a senpi CHILD AgentSession.prompt for spawned subagent turns; senpi-task cannot reach OpenCode session APIs (opencode-coupling audit) so the main-session injection invariant does not apply",
   ],

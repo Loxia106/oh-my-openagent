@@ -5188,7 +5188,7 @@ npm i -g omo-ai@beta
 #### Documentation
 
 - Added [`ROADMAP.md`](ROADMAP.md) describing the package layering refactor and multi-harness direction.
-- Added OmO logo to [`README.ru.md`](README.ru.md) for parity with the other localized READMEs.
+- Added OmO logo to `README.ru.md` for parity with the other localized READMEs.
 - PR merge policy documented: merge commits required, squash/rebase forbidden.
 - `prompt-async-gate-rfc.md` updated with `DEFAULT_PROMPT_ASYNC_POST_DISPATCH_HOLD_MS` 250 -> 2000 rationale.
 

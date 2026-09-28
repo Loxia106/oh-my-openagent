@@ -62,6 +62,20 @@ export function isClaudeFableOrMythosModel(model: string): boolean {
   return CLAUDE_FABLE_OR_MYTHOS_RE.test(modelName)
 }
 
+const CLAUDE_GENERATION_RE = /claude-(?:opus|sonnet|haiku)-(\d+)/
+
+/**
+ * Claude models that accept only adaptive thinking (thinking.type "enabled" is rejected with a 400):
+ * Opus 4.7+, Fable/Mythos, and every Claude 5-generation model such as claude-sonnet-5. OpenCode core
+ * derives adaptive thinking and effort from the model variant, so OMO must not add an enabled budget.
+ */
+export function isClaudeAdaptiveThinkingOnlyModel(model: string): boolean {
+  if (isClaudeOpus47OrLaterModel(model) || isClaudeFableOrMythosModel(model)) return true
+  const modelName = extractModelName(model).toLowerCase().replaceAll(".", "-")
+  const match = CLAUDE_GENERATION_RE.exec(modelName)
+  return match !== null && Number(match[1]) >= 5
+}
+
 export function isKimiK2Model(model: string): boolean {
   const modelName = extractModelName(model).toLowerCase()
   if (modelName.includes("kimi")) return true

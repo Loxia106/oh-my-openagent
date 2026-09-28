@@ -1,5 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import {
+  buildClaudeThinkingConfig,
   isGptModel,
   isGeminiModel,
   isGlmModel,
@@ -183,5 +184,18 @@ describe("isGeminiModel", () => {
 
   test("#given opencode provider #then returns false", () => {
     expect(isGeminiModel("opencode/claude-opus-4-7")).toBe(false);
+  });
+});
+
+describe("buildClaudeThinkingConfig", () => {
+  test("omits the enabled-thinking budget for adaptive-only Claude models such as Sonnet 5 on Bedrock", () => {
+    expect(buildClaudeThinkingConfig("anthropic/claude-sonnet-5")).toEqual({});
+    expect(buildClaudeThinkingConfig("amazon-bedrock/us.anthropic.claude-sonnet-5-20260801-v1:0")).toEqual({});
+    expect(buildClaudeThinkingConfig("anthropic/claude-opus-4-7")).toEqual({});
+  });
+
+  test("keeps the enabled-thinking budget for earlier Claude models", () => {
+    expect(buildClaudeThinkingConfig("anthropic/claude-sonnet-4-6")).toEqual({ thinking: { type: "enabled", budgetTokens: 32000 } });
+    expect(buildClaudeThinkingConfig("anthropic/claude-haiku-4-5")).toEqual({ thinking: { type: "enabled", budgetTokens: 32000 } });
   });
 });

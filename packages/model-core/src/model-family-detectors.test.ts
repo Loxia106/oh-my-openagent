@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import {
+  isClaudeAdaptiveThinkingOnlyModel,
   isClaudeFable5Model,
   isClaudeOpus46Model,
   isClaudeOpus47Model,
@@ -168,6 +169,26 @@ describe("model family detectors", () => {
     expect(isClaudeFableOrMythosModel("anthropic/claude-opus-4-8")).toBe(false)
     expect(isClaudeFableOrMythosModel("anthropic/claude-sonnet-4-6")).toBe(false)
     expect(isClaudeFableOrMythosModel("openai/gpt-5.5")).toBe(false)
+  })
+
+  test("#given Claude model ids #then detects adaptive-thinking-only models including the Claude 5 generation", () => {
+    for (const model of [
+      "anthropic/claude-sonnet-5",
+      "amazon-bedrock/us.anthropic.claude-sonnet-5-20260801-v1:0",
+      "amazon-bedrock/anthropic.claude-sonnet-5",
+      "anthropic/claude-opus-5-5",
+      "anthropic/claude-opus-4-7",
+      "anthropic/claude-fable-5-1",
+      "anthropic/claude-mythos-preview",
+      "anthropic/claude-haiku-5",
+    ]) expect(isClaudeAdaptiveThinkingOnlyModel(model)).toBe(true)
+    for (const model of [
+      "anthropic/claude-sonnet-4-6",
+      "amazon-bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "anthropic/claude-haiku-4-5",
+      "anthropic/claude-opus-4-6",
+      "openai/gpt-5.5",
+    ]) expect(isClaudeAdaptiveThinkingOnlyModel(model)).toBe(false)
   })
 
   test("#given Grok 4.5 model ids #then detects Grok 4.5 only", () => {

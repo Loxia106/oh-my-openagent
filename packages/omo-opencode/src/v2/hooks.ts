@@ -20,6 +20,7 @@ import { registerV2UltraworkModelOverride } from "./ultrawork-model"
 import { registerV2UnstableAgentBabysitter } from "./unstable-agent-babysitter"
 import { registerV2ToolPairValidator } from "./tool-pair-validator"
 import { registerV2AstGrepProvision } from "./ast-grep-provision"
+import { registerV2ClaudeThinkingGuard } from "./claude-thinking-guard"
 import { registerV2CompactionModelOverride, registerV2CompactionOverflowGuard, registerV2PreemptiveCompaction, registerV2ToolOutputTruncator } from "./long-conversation"
 
 async function unwind(cleanups: Array<() => Promise<void>>): Promise<unknown[]> {
@@ -79,6 +80,8 @@ export async function registerV2Hooks(ctx: Plugin.Context, config: OhMyOpenCodeC
 			resolveLogicalParent: options.resolveLogicalParent,
 			isStopped: (sessionID) => closing || isV2ContinuationStopped(ctx, sessionID),
 		}))
+		// Last context hook: sanitize the final options for the model actually requested.
+		cleanups.push(await registerV2ClaudeThinkingGuard(ctx))
 	} catch (error) {
 		closing = true
 		const cleanupErrors = await unwind(cleanups)

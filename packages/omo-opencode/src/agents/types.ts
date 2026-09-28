@@ -2,6 +2,7 @@ import type { AgentConfig } from "@opencode-ai/sdk";
 
 import {
   isClaudeFable5Model,
+  isClaudeAdaptiveThinkingOnlyModel,
   isClaudeFableOrMythosModel,
   isClaudeOpus46Model,
   isClaudeOpus47Model,
@@ -23,6 +24,7 @@ import {
 
 export {
   isClaudeFable5Model,
+  isClaudeAdaptiveThinkingOnlyModel,
   isClaudeFableOrMythosModel,
   isClaudeOpus46Model,
   isClaudeOpus47Model,
@@ -45,7 +47,8 @@ export {
 const CLAUDE_THINKING_BUDGET_TOKENS = 32000;
 
 /**
- * Anthropic Opus 4.7+, Fable, and Mythos models reject thinking.type "enabled";
+ * Anthropic Opus 4.7+, Fable, Mythos, and Claude 5-generation models (e.g. claude-sonnet-5)
+ * reject thinking.type "enabled";
  * they require adaptive thinking plus an effort, which OpenCode core derives from
  * the model variant. For those models emit no thinking config and let core drive
  * it (issue #4614; opencode core #31546). All other Claude models keep the
@@ -54,7 +57,7 @@ const CLAUDE_THINKING_BUDGET_TOKENS = 32000;
 export function buildClaudeThinkingConfig(
   model: string,
 ): { thinking: { type: "enabled"; budgetTokens: number } } | Record<string, never> {
-  if (isClaudeOpus47OrLaterModel(model) || isClaudeFableOrMythosModel(model)) {
+  if (isClaudeAdaptiveThinkingOnlyModel(model)) {
     return {};
   }
   return { thinking: { type: "enabled", budgetTokens: CLAUDE_THINKING_BUDGET_TOKENS } };

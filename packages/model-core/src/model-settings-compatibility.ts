@@ -1,5 +1,5 @@
 import { detectHeuristicModelFamily } from "./model-capability-heuristics"
-import { isClaudeOpus47OrLaterModel } from "./model-family-detectors"
+import { isClaudeAdaptiveThinkingOnlyModel } from "./model-family-detectors"
 import { clampReasoningLevel } from "./reasoning-level"
 
 type CompatibilityField = "variant" | "reasoningEffort" | "temperature" | "topP" | "maxTokens" | "thinking"
@@ -144,7 +144,7 @@ export function resolveCompatibleModelSettings(
   const metadataSupportsTemperature = input.capabilities?.supportsTemperature
   const familyDisallowsTemperature =
     metadataSupportsTemperature === undefined &&
-    (isClaudeOpus47OrLaterModel(input.modelID) || family?.supportsTemperature === false)
+    (isClaudeAdaptiveThinkingOnlyModel(input.modelID) || family?.supportsTemperature === false)
   if (
     temperature !== undefined &&
     (metadataSupportsTemperature === false || familyDisallowsTemperature)
