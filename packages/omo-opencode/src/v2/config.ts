@@ -11,10 +11,12 @@ export function loadV2Config(directory: string): OhMyOpenCodeConfig {
   if (!migratedDirectories.has(directory)) {
     initConfigContext("opencode", null)
     const migration = runOpenCodeStartupMigration({ cwd: directory })
-    if (migration.error) {
-      throw new Error(`[v2 config] Legacy configuration migration failed: ${migration.error}`)
-    }
     migratedDirectories.add(directory)
+    if (migration.error) {
+      // A rejected migration writes nothing. Keep loading the existing files through the regular
+      // validator, which ignores unknown keys with a diagnostic, instead of disabling every agent.
+      log(`[v2 config] Configuration migration was skipped; existing files are loaded unchanged. ${migration.error}`)
+    }
     if (migration.migratedFrom.length > 0) {
       log(`[v2 config] Migrated ${migration.migratedFrom.length} legacy configuration source(s).`)
     }
