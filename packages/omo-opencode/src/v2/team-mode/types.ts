@@ -14,6 +14,10 @@ export type V2TeamManagerStart = {
 
 export type V2TeamManager = {
 	readonly resolveLogicalParent: TeamLogicalParentResolver
+	/** True for an isolated member worktree Location of a run this activation owns. */
+	readonly ownsDirectory: (directory: string) => boolean
+	/** Load owned runs' member worktree Locations before admission restores durable child leases. */
+	loadOwnership(): Promise<void>
 	start(dependencies: V2TeamManagerStart): Promise<void>
 	createTools(editor: ToolEditor): void
 	dispose(): Promise<void>

@@ -6,6 +6,7 @@ import { registerV2Tools } from "./tools"
 import { registerV2Commands } from "./commands"
 import { createV2TeamManager } from "./team-mode"
 import { isV2ContinuationStopped } from "./lifecycle"
+import { recordV2LocationHeartbeat } from "./team-mode/location-heartbeat"
 
 async function unwind(cleanups: Array<() => Promise<void>>): Promise<unknown[]> {
 	const errors: unknown[] = []
@@ -30,6 +31,7 @@ export async function setupV2(ctx: Plugin.Context): Promise<() => Promise<void>>
 		// The verified membership resolver must exist before admission restores
 		// durable child leases. dispose is idempotent, including partial setup.
 		if (team) cleanups.push(() => team.dispose())
+		await team?.loadOwnership()
 		const tools = await registerV2Tools(ctx, config, {
 			team,
 			isStopped: (sessionID) => closing || isV2ContinuationStopped(ctx, sessionID),
@@ -44,6 +46,7 @@ export async function setupV2(ctx: Plugin.Context): Promise<() => Promise<void>>
 		// first, and stop those producers before tearing the hooks down.
 		if (team) cleanups.push(() => team.dispose())
 		await tools.startManagedSessions()
+		await recordV2LocationHeartbeat(ctx, team !== undefined)
 	} catch (error) {
 		closing = true
 		const cleanupErrors = await unwind(cleanups)

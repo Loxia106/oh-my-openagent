@@ -111,6 +111,7 @@ export async function registerV2Tools(
 		toolRegistration = await ctx.tool.transform((editor) => addNativeTools(editor, ctx, config, skillMcp, monitor))
 		delegation = await registerV2Delegation(ctx, config, getV2SubagentRunState(ctx.storage), {
 			resolveLogicalParent: options.team?.resolveLogicalParent,
+			managedDirectory: options.team?.ownsDirectory,
 			isStopped: options.isStopped,
 		})
 		if (options.team) {

@@ -615,3 +615,160 @@ describe("native Team process-restart recovery", () => {
 		}
 	}, 30_000)
 })
+
+describe("native Team isolated worktree members", () => {
+	async function worktreeHarness(options: { omoInWorktree: boolean }) {
+		const { realpath, writeFile: write, readFile: read } = await import("node:fs/promises")
+		const { recordV2LocationHeartbeat } = await import("./location-heartbeat")
+		const root = await realpath(await mkdtemp(join(tmpdir(), "omo-v2-team-worktree-")))
+		const projectDirectory = join(root, "project")
+		await mkdir(join(projectDirectory, ".git", "info"), { recursive: true })
+		await write(join(projectDirectory, ".git", "info", "exclude"), "# local excludes\n")
+		const values = new Map<string, unknown>()
+		const storage = {
+			get: async (key: string) => values.get(key),
+			set: async (key: string, value: unknown) => { values.set(key, value) },
+			remove: async (key: string) => { values.delete(key) },
+		}
+		const leadID = "ses-wt-lead"
+		const sessions = new Map<string, { id: string; location: { directory: string }; time: { created: number; updated: number; idle?: number }; outcome?: string; [key: string]: unknown }>()
+		sessions.set(leadID, { id: leadID, projectID: "project-wt", agent: "atlas", model: { providerID: "host", id: "model" }, location: { directory: projectDirectory }, parentID: undefined, time: { created: 1, updated: 1, idle: 100 }, outcome: "succeeded" })
+		const created: Array<Record<string, unknown>> = []
+		const removed: Array<Record<string, unknown>> = []
+		const prompts: Array<{ sessionID: string; text: string }> = []
+		const synthetics: Array<{ sessionID: string; text: string }> = []
+		const interrupted: string[] = []
+		let childCount = 0
+		const makeCtx = (directory: string) => unsafeTestValue<Plugin.Context>({
+			location: { directory, project: { id: "project-wt", canonical: projectDirectory }, workspaceID: undefined },
+			storage,
+			agent: { list: async () => ({ data: [
+				{ id: "atlas", mode: "primary", model: { providerID: "host", id: "model" } },
+				{ id: "sisyphus", mode: "primary", model: { providerID: "host", id: "model" } },
+			] }) },
+			model: {
+				list: async () => ({ data: [{ providerID: "host", id: "model", enabled: true, variants: [] }] }),
+				default: async () => ({ data: { providerID: "host", id: "model" } }),
+			},
+			worktree: {
+				create: async (input: { directory: string; name: string }) => {
+					created.push(input)
+					const target = join(input.directory, input.name)
+					await mkdir(target, { recursive: true })
+					return { directory: target }
+				},
+				remove: async (input: { directory: string; force: boolean }) => {
+					removed.push(input)
+					if (input.directory.includes("alpha")) throw new Error("contains modified or untracked files, use --force to delete it")
+				},
+			},
+			session: {
+				get: async ({ sessionID }: { sessionID: string }) => sessions.get(sessionID)!,
+				create: async (input: { location: { directory: string } }) => {
+					childCount += 1
+					const session = { id: `ses-wt-member-${childCount}`, projectID: "project-wt", agent: "sisyphus", model: { providerID: "host", id: "model" }, location: { directory: input.location.directory }, parentID: undefined, time: { created: 1, updated: 1 }, outcome: undefined }
+					sessions.set(session.id, session)
+					return session
+				},
+				prompt: async (input: { sessionID: string; text: string }) => {
+					prompts.push(input)
+					const directory = sessions.get(input.sessionID)!.location.directory
+					// OpenCode activates the member Location while accepting its first prompt.
+					if (options.omoInWorktree && directory !== projectDirectory) await recordV2LocationHeartbeat(makeCtx(directory), true)
+				},
+				synthetic: async (input: { sessionID: string; text: string }) => { synthetics.push(input) },
+				wait: async () => undefined,
+				interrupt: async ({ sessionID }: { sessionID: string }) => { interrupted.push(sessionID) },
+				hook: async () => ({ dispose: async () => undefined }),
+			},
+			event: { subscribe: async function* ({ signal }: { signal: AbortSignal }) { await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true })) } },
+		})
+		const config = unsafeTestValue<OhMyOpenCodeConfig>({ team_mode: { enabled: true, base_dir: join(root, "teams"), max_parallel_members: 2 } })
+		const dependencies = {
+			admission: { acquire: async () => ({ beginCreate: async () => undefined, bind: async () => undefined, rollback: async () => true }) } as never,
+			runs: { get: async () => undefined, recordLaunch: async () => undefined, children: async () => [] } as never,
+		}
+		const toolsFor = (manager: ReturnType<typeof createV2TeamManager>) => {
+			const tools = new Map<string, { execute: (input: unknown, context: unknown) => Promise<{ content?: string }> }>()
+			manager.createTools(unsafeTestValue<ToolEditor>({ add: (tool: { name: string; execute: (input: unknown, context: unknown) => Promise<{ content?: string }> }) => tools.set(tool.name, tool), remove: () => undefined, get: () => undefined }))
+			return tools
+		}
+		const call = (tools: ReturnType<typeof toolsFor>, name: string, args: unknown, sessionID = leadID) =>
+			tools.get(name)!.execute(args, { sessionID, signal: new AbortController().signal, id: `${name}-${Math.random()}` })
+		const waitUntil = async (predicate: () => boolean | Promise<boolean>, label: string) => {
+			for (let attempt = 0; attempt < 400; attempt += 1) {
+				if (await predicate()) return
+				await new Promise((resolve) => setTimeout(resolve, 25))
+			}
+			throw new Error(`Timed out waiting for ${label}.`)
+		}
+		return { root, projectDirectory, sessions, created, removed, prompts, synthetics, interrupted, makeCtx, config, dependencies, toolsFor, call, waitUntil, read, leadID }
+	}
+
+	test("launches a member in a project-local native worktree, delivers mail across Locations and keeps unintegrated work on delete", async () => {
+		const h = await worktreeHarness({ omoInWorktree: true })
+		const owner = createV2TeamManager(h.makeCtx(h.projectDirectory), h.config)
+		let memberSide: ReturnType<typeof createV2TeamManager> | undefined
+		try {
+			await owner.start(h.dependencies)
+			const tools = h.toolsFor(owner)
+			const created = JSON.parse((await h.call(tools, "team_create", { inline_spec: {
+				version: 1, name: "wt", leadAgentId: "lead",
+				members: [
+					{ kind: "subagent_type", name: "lead", subagent_type: "atlas" },
+					{ kind: "subagent_type", name: "alpha", subagent_type: "sisyphus", worktree: true },
+				],
+			} })).content ?? "{}")
+			await h.waitUntil(() => h.prompts.length === 1, "alpha launch")
+			const worktree = join(h.projectDirectory, ".omo", "worktrees", `wt-alpha-${created.teamRunId.slice(0, 8)}`)
+			expect(h.created[0]).toMatchObject({ projectID: "project-wt", from: h.projectDirectory, directory: join(h.projectDirectory, ".omo", "worktrees"), name: `wt-alpha-${created.teamRunId.slice(0, 8)}` })
+			const alphaID = h.prompts[0]!.sessionID
+			expect(h.sessions.get(alphaID)!.location.directory).toBe(worktree)
+			expect(h.prompts[0]!.text).toContain(`Worktree: ${worktree}`)
+			expect(await h.read(join(h.projectDirectory, ".git", "info", "exclude"), "utf8")).toContain("/.omo/worktrees/")
+			expect(owner.ownsDirectory(worktree)).toBe(true)
+			expect(owner.ownsDirectory(h.projectDirectory)).toBe(false)
+
+			// The member's own activation writes mail and nudges; the owner delivers it to the lead.
+			memberSide = createV2TeamManager(h.makeCtx(worktree), h.config)
+			await memberSide.start(h.dependencies)
+			const memberTools = h.toolsFor(memberSide)
+			await h.call(memberTools, "team_send_message", { teamRunId: created.teamRunId, to: "lead", body: "WT_REPORT from alpha" }, alphaID)
+			await h.waitUntil(() => h.synthetics.some((entry) => entry.sessionID === h.leadID && entry.text.includes("WT_REPORT from alpha")), "cross-Location delivery")
+			expect(h.synthetics.filter((entry) => entry.text.includes("WT_REPORT from alpha"))).toHaveLength(1)
+
+			const deleted = JSON.parse((await h.call(tools, "team_delete", { teamRunId: created.teamRunId, force: true })).content ?? "{}")
+			expect(h.removed).toEqual([{ projectID: "project-wt", directory: worktree, force: false }])
+			expect(deleted.worktrees.kept).toEqual([{ directory: worktree, reason: expect.stringContaining("modified or untracked") }])
+			expect(deleted.worktrees.removed).toEqual([])
+		} finally {
+			await memberSide?.dispose()
+			await owner.dispose()
+			await rm(h.root, { recursive: true, force: true })
+		}
+	}, 30_000)
+
+	test("fails closed and stops the member when OMO is not active in its worktree Location", async () => {
+		const h = await worktreeHarness({ omoInWorktree: false })
+		const owner = createV2TeamManager(h.makeCtx(h.projectDirectory), h.config)
+		try {
+			await owner.start(h.dependencies)
+			const tools = h.toolsFor(owner)
+			const created = JSON.parse((await h.call(tools, "team_create", { inline_spec: {
+				version: 1, name: "wt", leadAgentId: "lead",
+				members: [
+					{ kind: "subagent_type", name: "lead", subagent_type: "atlas" },
+					{ kind: "subagent_type", name: "alpha", subagent_type: "sisyphus", worktree: true },
+				],
+			} })).content ?? "{}")
+			await h.waitUntil(() => h.interrupted.length === 1, "fail-closed interrupt")
+			expect(h.interrupted).toEqual([h.prompts[0]!.sessionID])
+			const status = JSON.parse((await h.call(tools, "team_status", { teamRunId: created.teamRunId })).content ?? "{}")
+			await h.waitUntil(async () => JSON.parse((await h.call(tools, "team_status", { teamRunId: created.teamRunId })).content ?? "{}").runtimeState.members.find((member: { name: string }) => member.name === "alpha").status === "errored", "alpha errored")
+			expect(status.runtimeState.members.find((member: { name: string }) => member.name === "alpha").worktreePath).toContain(".omo/worktrees/wt-alpha-")
+		} finally {
+			await owner.dispose()
+			await rm(h.root, { recursive: true, force: true })
+		}
+	}, 30_000)
+})

@@ -17,6 +17,8 @@ const TeamMemberIdentitySchema = z.object({
 	name: z.string().min(1),
 	sessionID: z.string().min(1).optional(),
 	role: z.enum(["lead", "member"]),
+	/** Canonical native worktree Location of an isolated member; absent members share the lead Location. */
+	directory: z.string().min(1).optional(),
 	turnCount: z.number().int().nonnegative().default(0),
 	admittedSyntheticMessageIDs: z.array(z.string().min(1).max(256)).default([]),
 }).strict()
@@ -119,9 +121,18 @@ function assertRuntimeMatches(record: V2TeamMembershipRecord, runtime: RuntimeIn
 	}
 }
 
+/** Every Location a run may be evaluated from: the lead's plus each isolated member worktree. */
+export function v2TeamRunDirectories(record: V2TeamMembershipRecord): string[] {
+	return [...new Set([record.directory, ...record.members.flatMap((member) => member.directory ? [member.directory] : [])])]
+}
+
+export function canonicalTeamDirectory(directory: string): string {
+	return canonicalDirectory(directory)
+}
+
 function assertCurrentLocation(record: V2TeamMembershipRecord, location: Location): void {
 	if (record.projectID !== location.project.id ||
-		record.directory !== canonicalDirectory(String(location.directory)) ||
+		!v2TeamRunDirectories(record).includes(canonicalDirectory(String(location.directory))) ||
 		record.workspaceID !== (location.workspaceID ?? null)) {
 		throw new V2TeamMembershipError(`Known Team session belongs to another project or workspace; refusing logical-parent resolution for ${record.teamRunId}.`)
 	}
@@ -230,8 +241,9 @@ export function createV2TeamMembershipStore(
 		} catch (error) {
 			throw new V2TeamMembershipError(`Known Team session ${sessionID} cannot be verified with OpenCode; refusing to drop logical ancestry.`, { cause: error })
 		}
+		// A member runs in its own worktree Location when isolated, otherwise in the lead's.
 		if (session.id !== sessionID || session.projectID !== ctx.location.project.id ||
-			canonicalDirectory(session.location.directory) !== canonicalDirectory(String(ctx.location.directory))) {
+			canonicalDirectory(session.location.directory) !== (member.directory ?? record.directory)) {
 			throw new V2TeamMembershipError(`OpenCode session ${sessionID} disagrees with its durable Team location.`)
 		}
 		return { record, member, runtime, session }
@@ -312,6 +324,28 @@ export function createV2TeamMembershipStore(
 					members: record.members.map((member) => member.name === input.memberName
 						? { ...member, sessionID: input.sessionID }
 						: member),
+				})
+				await atomicWrite(path, `${JSON.stringify(updated, null, 2)}\n`)
+				return updated
+			})
+		},
+
+		/** Persist an isolated member's native worktree before its session is created, so cleanup can find it. */
+		async bindWorktree(input: { teamRunId: string; memberName: string; directory: string }): Promise<V2TeamMembershipRecord> {
+			const path = recordPath(config, input.teamRunId)
+			return withLock(lockPath(config, input.teamRunId), async () => {
+				const record = await readRecord(input.teamRunId)
+				if (!record || record.closedAt !== null) throw new V2TeamMembershipError(`Team ${input.teamRunId} is unavailable for a member worktree.`)
+				assertCurrentLocation(record, ctx.location)
+				const member = record.members.find((entry) => entry.name === input.memberName)
+				if (!member || member.role !== "member") throw new V2TeamMembershipError(`Team ${input.teamRunId} has no member ${input.memberName}.`)
+				const directory = canonicalDirectory(input.directory)
+				if (member.directory && member.directory !== directory) {
+					throw new V2TeamMembershipError(`Team member ${input.memberName} already has a different worktree.`)
+				}
+				const updated = TeamMembershipRecordSchema.parse({
+					...record,
+					members: record.members.map((entry) => entry.name === input.memberName ? { ...entry, directory } : entry),
 				})
 				await atomicWrite(path, `${JSON.stringify(updated, null, 2)}\n`)
 				return updated

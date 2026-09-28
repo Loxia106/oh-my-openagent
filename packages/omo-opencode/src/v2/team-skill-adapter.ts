@@ -13,7 +13,7 @@ const NATIVE_TEAM_COMPATIBILITY = `
 
 ## Native OpenCode Team adapter
 
-This plugin runs Team members as standalone native OpenCode sessions linked by a durable OMO Team identity. It does not create worktrees or tmux panes; all members use the current project location. Tool calls use camel-case \`teamRunId\`; \`team_send_message\` accepts \`body\` (not \`message\`). Team messages are delivered as queued native prompts. A member may claim or update only its own tasks; only the lead may assign ownership to someone else. Members cannot create Teams or delegate further work.
+This plugin runs Team members as standalone native OpenCode sessions linked by a durable OMO Team identity. Members share the lead's project location unless a member sets \`worktree: true\` (or \`worktreePath\`), which gives it an isolated host-managed git worktree under \`.omo/worktrees\`; the lead integrates its changes. tmux panes are not used. Tool calls use camel-case \`teamRunId\`; \`team_send_message\` accepts \`body\` (not \`message\`). Team messages are delivered as queued native prompts. A member may claim or update only its own tasks; only the lead may assign ownership to someone else. Members cannot create Teams or delegate further work.
 `
 
 function rewriteDefinition(skill: LoadedSkill, template: string): LoadedSkill {
@@ -36,14 +36,14 @@ function builtinSkill(name: string, description: string, template: string): Load
 function adaptTeamModeTemplate(template: string): string {
 	const corrected = template
 		.replace(/Use worktree mode for isolated code changes, or tmux visualization when you want live session layout\./g,
-			"Native Team members run as separate sessions in the current project location.")
+			"Use worktree mode (`worktree: true` on a member, or a legacy `worktreePath`) for isolated code changes; that member then runs in its own native OpenCode worktree. Native members appear in the OpenCode session list instead of tmux panes.")
 		.replace(/team_shutdown_request\(\{ teamRunId, memberName: M \}\)/g,
 			"team_shutdown_request({ teamRunId, targetMemberName: M })")
 		.replace(/Any agent can set or change task ownership via `team_task_update` with the `owner` field\. Members typically claim work by setting `owner: "<their-name>"` and `status: "claimed"` \(or directly `"in_progress"`\)\. The lead can also pre-assign work by creating tasks with `owner` set\./g,
 			"Members can claim and update their own tasks; they cannot claim for another member or delete another member's task. The lead may claim an unowned pending task for a verified Team member and may update that member's owned task. The shared task list enforces dependencies and valid status transitions.")
 		.replace(/session IDs, and tmux pane assignments/g, "session IDs")
 		.replace(/ plus worktree or tmux visibility to understand how the team is laid out\./g,
-			". Native members share the current project location.")
+			" plus the member worktree paths in `team_status` to understand how the team is laid out.")
 	return corrected.includes("## Native OpenCode Team adapter") ? corrected : `${corrected.trimEnd()}${NATIVE_TEAM_COMPATIBILITY}`
 }
 

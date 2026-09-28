@@ -43,6 +43,8 @@ Team/Hyperplan에는 `[opencode].team_mode.enabled`, `/goal`과 목표 도구에
 - `monitor.enabled`: `monitor_*` 도구를 켭니다.
 - `hashline_edit`: `read`/`edit`를 `LINE#ID` 앵커 방식으로 바꿉니다.
 
+Team 멤버 스펙에 `worktree: true`를 주면 그 멤버는 OpenCode의 네이티브 worktree(기본 위치 `<프로젝트>/.omo/worktrees`)에서 격리되어 작업합니다. 이 경로는 `.git/info/exclude`에 추가되어 리더의 커밋에 섞이지 않습니다. 리더가 멤버의 변경을 통합하며, `team_delete`는 변경이 남은 worktree를 지우지 않고 경로를 알려 줍니다.
+
 ## 실행 흐름
 
 - 일반 작업은 Sisyphus 또는 Hephaestus에서 시작합니다. Explore·Librarian의 조사, Junior의 구현, Oracle의 검토 결과를 부모 대화에서 이어받습니다.

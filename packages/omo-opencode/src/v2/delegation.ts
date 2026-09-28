@@ -803,7 +803,7 @@ export async function registerV2Delegation(
   ctx: Plugin.Context,
   config: OhMyOpenCodeConfig,
   runs: V2SubagentRunState,
-  options: { resolveLogicalParent?: VerifiedLogicalParentResolver; isStopped?: (sessionID: string) => boolean | Promise<boolean> } = {},
+  options: { resolveLogicalParent?: VerifiedLogicalParentResolver; managedDirectory?: (directory: string) => boolean; isStopped?: (sessionID: string) => boolean | Promise<boolean> } = {},
 ): Promise<V2DelegationRuntime> {
   const childSessions = new Map<string, Set<string>>()
   const invocations: AliasInvocations = new Map()
@@ -814,6 +814,7 @@ export async function registerV2Delegation(
     childSessions,
     isAliasInvocation: (context) => invocations.has(invocationKey(context)),
     resolveLogicalParent: options.resolveLogicalParent,
+    managedDirectory: options.managedDirectory,
     isStopped: options.isStopped,
   })
   let permissionRegistration: Awaited<ReturnType<typeof registerV2SubagentPermissionGuard>> | undefined

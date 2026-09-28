@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from "node:crypto"
+import { appendFile, readFile, stat } from "node:fs/promises"
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { Error as ToolError, type ToolContext, type ToolEditor } from "@opencode/plugin/promise/tool"
 import type { Plugin } from "@opencode/plugin"
 import { z } from "zod"
@@ -12,6 +14,7 @@ import { createTask, getTask, listTasks, claimTask, updateTaskStatus, AlreadyCla
 import { ackMessages, listUnreadMessages, sendMessage, BroadcastNotPermittedError, DuplicateMessageIdError, PayloadTooLargeError, RecipientBackpressureError } from "@oh-my-opencode/team-core/team-mailbox"
 import { InvalidRecipientError, TeamDeletingError } from "@oh-my-opencode/team-core/team-mailbox/send"
 import { buildEnvelope } from "@oh-my-opencode/team-core/team-mailbox/poll"
+import { validateWorktreeSpec } from "@oh-my-opencode/team-core/team-worktree"
 import { MessageSchema, AGENT_ELIGIBILITY_REGISTRY, type Message, type Task } from "@oh-my-opencode/team-core/types"
 import { requestShutdownOfMember, approveShutdown, rejectShutdown } from "../../features/team-mode/team-runtime/shutdown"
 import { findLatestShutdownRequestIndex } from "../../features/team-mode/team-runtime/shutdown-helpers"
@@ -24,7 +27,8 @@ import { resolveV2ManagedAgentModelChoice } from "../delegation-admission"
 import { addV2Tool } from "../tool-adapter"
 import type { V2SubagentRunState } from "../task-state"
 import { log } from "../../shared/logger"
-import { createV2TeamMembershipStore, V2TeamMembershipError, type V2TeamMembershipRecord, type TeamLogicalParentResolver } from "./membership-store"
+import { canonicalTeamDirectory, createV2TeamMembershipStore, v2TeamRunDirectories, V2TeamMembershipError, type V2TeamMembershipRecord, type TeamLogicalParentResolver } from "./membership-store"
+import { readV2LocationHeartbeat } from "./location-heartbeat"
 import { buildV2TeamMemberPrompt } from "./prompts"
 import type { V2TeamManager, V2TeamManagerStart } from "./types"
 
@@ -153,9 +157,10 @@ async function validateMemberLaunch(
 	if (member.backendType !== "in-process") {
 		throw new Error(`Team member ${member.name} requests backendType=${member.backendType}; native Team members require backendType=in-process.`)
 	}
-	if (member.cwd || member.worktreePath) {
-		throw new Error(`Team member ${member.name} specifies cwd/worktreePath; native Team members currently require the calling project location.`)
+	if (member.cwd) {
+		throw new Error(`Team member ${member.name} specifies cwd; native Team members run in the lead Location or, with worktree/worktreePath, in their own native worktree.`)
 	}
+	if (member.worktreePath) validateWorktreeSpec(member.worktreePath)
 	const route = memberAgent(member)
 	if (config.disabled_agents?.some((name) => name.trim().toLowerCase() === route.agentID.toLowerCase()) ||
 		config.agents?.[route.agentID as keyof NonNullable<OhMyOpenCodeConfig["agents"]>]?.disable) {
@@ -206,11 +211,31 @@ function canonical(value: string): string {
 	return value.replaceAll("\\", "/").replace(/\/$/, "")
 }
 
-function eventMatchesLocation(event: NativeEvent, ctx: Plugin.Context): boolean {
-	const location = "location" in event ? event.location : undefined
-	if (!location) return true
-	if (canonical(location.directory) !== canonical(String(ctx.location.directory))) return false
-	return !("workspaceID" in location) || location.workspaceID === ctx.location.workspaceID
+/** Isolated members default to a project-local native worktree so OpenCode and OMO config apply there. */
+const TEAM_WORKTREE_BASE = [".omo", "worktrees"] as const
+const TEAM_NUDGE_PREFIX = "oh-my-openagent:v2:team-nudge:"
+const TEAM_NUDGE_POLL_MS = 750
+const WORKTREE_ACTIVATION_TIMEOUT_MS = 5_000
+
+function wantsWorktree(member: Member): boolean {
+	return member.worktree === true || Boolean(member.worktreePath)
+}
+
+function worktreeName(teamName: string, memberName: string, teamRunId: string): string {
+	return `${teamName}-${memberName}-${teamRunId.slice(0, 8)}`.replace(/[^a-zA-Z0-9._-]/g, "-")
+}
+
+/** Keep project-local member worktrees out of the lead's `git add`/status without touching tracked files. */
+async function excludeWorktreeBase(projectRoot: string, base: string): Promise<void> {
+	const relativeBase = relative(projectRoot, base)
+	if (!relativeBase || relativeBase.startsWith("..") || isAbsolute(relativeBase)) return
+	const gitDirectory = join(projectRoot, ".git")
+	if (!(await stat(gitDirectory).catch(() => undefined))?.isDirectory()) return
+	const exclude = join(gitDirectory, "info", "exclude")
+	const line = `/${relativeBase.split("\\").join("/")}/`
+	const current = await readFile(exclude, "utf8").catch(() => "")
+	if (current.split("\n").some((entry) => entry.trim() === line)) return
+	await appendFile(exclude, `${current && !current.endsWith("\n") ? "\n" : ""}${line}\n`)
 }
 
 export function stableV2TeamMailboxPromptId(teamRunId: string, memberName: string, messageId: string): string {
@@ -292,6 +317,14 @@ export function createV2TeamManager(ctx: Plugin.Context, omoConfig: OhMyOpenCode
 	const teamConfig: TeamModeConfig = TeamModeConfigSchema.parse(rawTeamConfig)
 	const membership = createV2TeamMembershipStore(ctx, teamConfig)
 	const settings = createV2DelegationSettings(ctx.storage, ctx.location)
+	const leadDirectory = canonicalTeamDirectory(String(ctx.location.directory))
+	// Runs whose lead lives in this Location are owned (slots, launches, recovery) by this activation.
+	// Isolated members run in other Locations; their OMO activations only write durable state and nudge.
+	const ownedDirectories = new Set<string>([leadDirectory])
+	const ownedRuns = new Set<string>()
+	const nudgeSeen = new Map<string, string>()
+	const directoryCache = new Map<string, string>()
+	let nudgeTimer: ReturnType<typeof setInterval> | undefined
 	const controls = new Map<string, RunControl>()
 	const eventController = new AbortController()
 	let dependencies: V2TeamManagerStart | undefined
@@ -304,6 +337,109 @@ export function createV2TeamManager(ctx: Plugin.Context, omoConfig: OhMyOpenCode
 	let bootAt = 0
 	const registrations: Array<Awaited<ReturnType<typeof ctx.session.hook>>> = []
 	const actionQueues = new Map<string, Promise<void>>()
+
+	function isOwner(record: V2TeamMembershipRecord): boolean {
+		return record.directory === leadDirectory
+	}
+
+	function trackOwnedRun(record: V2TeamMembershipRecord): void {
+		if (!isOwner(record)) return
+		ownedRuns.add(record.teamRunId)
+		for (const directory of v2TeamRunDirectories(record)) ownedDirectories.add(directory)
+	}
+
+	function eventInOwnedLocation(event: NativeEvent): boolean {
+		const location = "location" in event ? event.location : undefined
+		if (!location) return true
+		let directory = directoryCache.get(location.directory)
+		if (!directory) {
+			directory = canonicalTeamDirectory(location.directory)
+			directoryCache.set(location.directory, directory)
+		}
+		if (!ownedDirectories.has(directory)) return false
+		return !("workspaceID" in location) || location.workspaceID === ctx.location.workspaceID
+	}
+
+	/** Deliver mailbox/shutdown work: the owner pumps directly, another Location's activation nudges the owner. */
+	async function requestDelivery(record: V2TeamMembershipRecord, memberNames: Iterable<string>): Promise<void> {
+		if (isOwner(record)) {
+			const control = controlFor(record.teamRunId)
+			for (const name of memberNames) control.pendingWakeups.add(name)
+			await pump(record.teamRunId)
+			return
+		}
+		await ctx.storage.set(`${TEAM_NUDGE_PREFIX}${record.teamRunId}`, { id: randomUUID(), at: Date.now() })
+	}
+
+	async function reconcileNudges(): Promise<void> {
+		for (const runId of ownedRuns) {
+			const nudge = await ctx.storage.get(`${TEAM_NUDGE_PREFIX}${runId}`).catch(() => undefined)
+			const id = typeof nudge === "object" && nudge !== null && !Array.isArray(nudge) ? String((nudge as Record<string, unknown>).id ?? "") : ""
+			if (!id || nudgeSeen.get(runId) === id) continue
+			nudgeSeen.set(runId, id)
+			const control = controlFor(runId)
+			if (control.closing) continue
+			const runtime = await loadRuntimeState(runId, teamConfig).catch(() => undefined)
+			if (!runtime || (runtime.status !== "active" && runtime.status !== "shutdown_requested")) continue
+			// Wakeups without unread mail are no-ops, so waking every live member picks up any durable change.
+			for (const member of runtime.members) {
+				if (member.sessionId && member.status !== "errored" && member.status !== "completed") control.pendingWakeups.add(member.name)
+			}
+			void pump(runId)
+		}
+	}
+
+	function startNudgeWatcher(): void {
+		if (nudgeTimer) return
+		nudgeTimer = setInterval(() => {
+			if (disposed || ownedRuns.size === 0) return
+			void reconcileNudges().catch((error) => log("[v2 team] could not reconcile cross-Location Team work", error))
+		}, TEAM_NUDGE_POLL_MS)
+	}
+
+	/** Create (or reuse) an isolated member's host-managed worktree and persist it before any session exists. */
+	async function ensureMemberWorktree(record: V2TeamMembershipRecord, member: Member): Promise<string> {
+		const existing = record.members.find((entry) => entry.name === member.name)?.directory
+		if (existing && (await stat(existing).catch(() => undefined))?.isDirectory()) return existing
+		const projectRoot = canonicalTeamDirectory(String(ctx.location.project.canonical ?? record.directory))
+		let base: string
+		let name: string
+		if (member.worktreePath) {
+			const target = resolve(record.directory, member.worktreePath)
+			base = dirname(target)
+			name = basename(target)
+		} else {
+			base = join(projectRoot, ...TEAM_WORKTREE_BASE)
+			name = worktreeName(record.teamName, member.name, record.teamRunId)
+		}
+		const created = await ctx.worktree.create({
+			projectID: ctx.location.project.id,
+			from: record.directory,
+			directory: base,
+			name,
+		} as Parameters<Plugin.Context["worktree"]["create"]>[0])
+		const directory = canonicalTeamDirectory(created.directory)
+		await excludeWorktreeBase(projectRoot, base).catch((error) => log("[v2 team] could not add the member worktree base to .git/info/exclude", error))
+		const updated = await membership.bindWorktree({ teamRunId: record.teamRunId, memberName: member.name, directory })
+		trackOwnedRun(updated)
+		await transitionRuntimeState(record.teamRunId, (current) => ({
+			...current,
+			members: current.members.map((entry) => entry.name === member.name ? { ...entry, worktreePath: directory } : entry),
+		}), teamConfig)
+		log("[v2 team] created a native worktree for an isolated member", { runId: record.teamRunId, memberName: member.name, directory })
+		return directory
+	}
+
+	/** Fail closed unless OMO with Team mode is live in the member Location; otherwise its tool limits would not apply. */
+	async function verifyMemberLocation(directory: string, since: number, signal?: AbortSignal): Promise<void> {
+		const deadline = Date.now() + WORKTREE_ACTIVATION_TIMEOUT_MS
+		while (Date.now() < deadline && !signal?.aborted) {
+			const heartbeat = await readV2LocationHeartbeat(ctx.storage, directory)
+			if (heartbeat && heartbeat.teamMode && heartbeat.at >= since) return
+			await new Promise((resolveWait) => setTimeout(resolveWait, 200))
+		}
+		throw new ToolError({ message: `OMO with team_mode is not active in the member worktree ${directory}. Place worktrees inside the project (the default) or register the plugin in the global OpenCode config so the worktree Location loads it.` })
+	}
 
 	async function serializeAction<T>(key: string, action: () => Promise<T>): Promise<T> {
 		const previous = actionQueues.get(key) ?? Promise.resolve()
@@ -526,17 +662,21 @@ export function createV2TeamManager(ctx: Plugin.Context, omoConfig: OhMyOpenCode
 			const blocked = route.categoryName
 				? actionAliases(omoConfig.categories?.[route.categoryName]?.tools)
 				: []
+			const worktreeStartedAt = Date.now()
+			const memberDirectory = wantsWorktree(member) ? await ensureMemberWorktree(record, member) : undefined
+			const sessionDirectory = memberDirectory ?? String(ctx.location.directory)
 			const session = await ctx.session.create({
 				title: `${record.teamName} / ${member.name}`,
 				agent: route.agentID,
 				model: choice.model,
-				location: { directory: String(ctx.location.directory) },
+				location: { directory: sessionDirectory },
 				metadata: { omoTeam: { version: 1, teamRunId: record.teamRunId, memberName: member.name, leadSessionID: record.leadSessionID } },
 				permissions: nativePermissions(blocked),
 			})
 			childID = session.id
 			if (control.closing || signal?.aborted) throw new ToolError({ message: `Team ${record.teamRunId} is shutting down; member launch cancelled.` })
-			if (session.parentID || session.projectID !== ctx.location.project.id || canonical(session.location.directory) !== canonical(String(ctx.location.directory))) {
+			if (session.parentID || session.projectID !== ctx.location.project.id ||
+				canonicalTeamDirectory(session.location.directory) !== (memberDirectory ?? leadDirectory)) {
 				throw new Error(`Native Team session ${session.id} does not match the managed project/location or has a native parent.`)
 			}
 			await transitionRuntimeState(record.teamRunId, (current) => ({
@@ -553,7 +693,8 @@ export function createV2TeamManager(ctx: Plugin.Context, omoConfig: OhMyOpenCode
 				blockedActions: [...new Set([...blocked, "question", "team_create", "subagent", "task", "call_omo_agent"])],
 			})
 			await ticket.bind(session.id)
-			await settings.write({
+			// Request settings are applied by the activation of the session's own Location.
+			await (memberDirectory ? createV2DelegationSettings(ctx.storage, { ...ctx.location, directory: memberDirectory } as Plugin.Context["location"]) : settings).write({
 				sessionID: session.id,
 				parentSessionID: record.leadSessionID,
 				agentID: route.agentID,
@@ -569,13 +710,23 @@ export function createV2TeamManager(ctx: Plugin.Context, omoConfig: OhMyOpenCode
 			control.executionStarted.delete(session.id)
 			if (control.closing || signal?.aborted) throw new ToolError({ message: `Team ${record.teamRunId} is shutting down; member launch cancelled.` })
 			const modelText = `${choice.model.providerID}/${choice.model.id}${choice.model.variant ? `#${choice.model.variant}` : ""}`
-			const prompt = buildV2TeamMemberPrompt({ spec: record.spec, member, teamRunId: record.teamRunId, model: choice.model })
+			const prompt = buildV2TeamMemberPrompt({ spec: record.spec, member, teamRunId: record.teamRunId, model: choice.model, worktree: memberDirectory })
 			const append = route.categoryName ? categoryAppend(omoConfig, route.categoryName, modelText, String(ctx.location.directory)) : undefined
 			const text = append ? `${prompt}\n\n# Category instructions\n${append}` : prompt
 			control.active.add(session.id)
 			control.reserved = Math.max(0, control.reserved - 1)
 			reservationHeld = false
 			await ctx.session.prompt({ sessionID: session.id, text, delivery: "queue" })
+			if (memberDirectory) {
+				// OpenCode activates a Location's plugins while accepting its first prompt, before the turn runs.
+				// Without OMO (and Team mode) there, the member's tool limits would not apply: stop it at once.
+				try {
+					await verifyMemberLocation(memberDirectory, worktreeStartedAt, signal)
+				} catch (error) {
+					await ctx.session.interrupt({ sessionID: session.id }).catch(() => undefined)
+					throw error
+				}
+			}
 			void pump(record.teamRunId)
 			return session.id
 		} catch (error) {
@@ -777,11 +928,11 @@ export function createV2TeamManager(ctx: Plugin.Context, omoConfig: OhMyOpenCode
 	}
 
 	async function onExecutionEvent(event: ExecutionEvent): Promise<void> {
-		if (!eventMatchesLocation(event, ctx)) return
+		if (!eventInOwnedLocation(event)) return
 		const sessionID = event.data?.sessionID
 		if (!sessionID) return
 		const found = await memberForSession(sessionID)
-		if (!found || found.member.role === "lead") return
+		if (!found || found.member.role === "lead" || !isOwner(found.record)) return
 		const control = controlFor(found.record.teamRunId)
 		if (event.type === "session.execution.started") {
 			startedSinceBoot.add(sessionID)
@@ -800,7 +951,7 @@ export function createV2TeamManager(ctx: Plugin.Context, omoConfig: OhMyOpenCode
 			try {
 				for await (const event of ctx.event.subscribe({ signal: eventController.signal })) {
 					if (disposed || eventController.signal.aborted) return
-					if (!isExecutionEvent(event) || !eventMatchesLocation(event, ctx)) continue
+					if (!isExecutionEvent(event) || !eventInOwnedLocation(event)) continue
 					try {
 						await onExecutionEvent(event)
 					} catch (error) {
@@ -881,6 +1032,7 @@ export function createV2TeamManager(ctx: Plugin.Context, omoConfig: OhMyOpenCode
 		})
 		const control = controlFor(runtime.teamRunId)
 		control.pendingMembers = spec.members.filter((member) => member.name !== leadName).map((member) => member.name)
+		ownedRuns.add(runtime.teamRunId)
 		scheduleWallClock(runtime.teamRunId, runtime.createdAt)
 		return { teamRunId: runtime.teamRunId, state: runtime }
 	}
@@ -900,7 +1052,7 @@ export function createV2TeamManager(ctx: Plugin.Context, omoConfig: OhMyOpenCode
 		wallClockTimers.set(teamRunId, timer)
 	}
 
-	async function deleteRun(actor: Actor, force: boolean | undefined, signal: AbortSignal): Promise<void> {
+	async function deleteRun(actor: Actor, force: boolean | undefined, signal: AbortSignal): Promise<{ removed: string[]; kept: Array<{ directory: string; reason: string }> }> {
 		if (actor.role !== "lead") throw new ToolError({ message: "team_delete is lead-only." })
 		const control = controlFor(actor.record.teamRunId)
 		const queuedWork = control.pendingMembers.length > 0 || control.reserved > 0 || control.launches.size > 0
@@ -944,11 +1096,26 @@ export function createV2TeamManager(ctx: Plugin.Context, omoConfig: OhMyOpenCode
 			status: "deleting",
 			members: current.members.map((member) => member.agentType === "leader" ? member : { ...member, status: "completed" }),
 		}), teamConfig)
+		const worktrees = ((await membership.recordForRun(actor.record.teamRunId)) ?? actor.record).members.flatMap((member) => member.directory ? [member.directory] : [])
 		await membership.closeRun(actor.record.teamRunId)
 		await transitionRuntimeState(actor.record.teamRunId, (current) => ({ ...current, status: "deleted" }), teamConfig)
 		const timer = wallClockTimers.get(actor.record.teamRunId)
 		if (timer) clearTimeout(timer)
 		wallClockTimers.delete(actor.record.teamRunId)
+		ownedRuns.delete(actor.record.teamRunId)
+		// Host-managed removal refuses a worktree with uncommitted work. Never force it: team_delete's force only
+		// concerns member sessions, and discarding a member's unintegrated changes cannot be undone.
+		const removed: string[] = []
+		const kept: Array<{ directory: string; reason: string }> = []
+		for (const directory of worktrees) {
+			try {
+				await ctx.worktree.remove({ projectID: ctx.location.project.id, directory, force: false } as Parameters<Plugin.Context["worktree"]["remove"]>[0])
+				removed.push(directory)
+			} catch (error) {
+				kept.push({ directory, reason: error instanceof Error ? error.message : String(error) })
+			}
+		}
+		return { removed, kept }
 	}
 
 	function disableIfConfigured(editor: ToolEditor, toolName: string): boolean {
@@ -999,33 +1166,37 @@ export function createV2TeamManager(ctx: Plugin.Context, omoConfig: OhMyOpenCode
 		})
 		add("team_delete", "Delete a finished team run. force=true interrupts native member and descendant sessions before retaining an ancestry tombstone.", deleteInput, async (args, context) => {
 			const actor = await requireActor(args.teamRunId, context.sessionID)
-			await deleteRun(actor, args.force, context.signal)
-			return JSON.stringify({ teamRunId: args.teamRunId, deleted: true, ancestryRetained: true })
+			const worktrees = await deleteRun(actor, args.force, context.signal)
+			return JSON.stringify({
+				teamRunId: args.teamRunId, deleted: true, ancestryRetained: true,
+				...(worktrees.removed.length || worktrees.kept.length ? { worktrees: {
+					removed: worktrees.removed,
+					kept: worktrees.kept,
+					...(worktrees.kept.length ? { note: "Worktrees with uncommitted changes were kept. Integrate or discard the changes, then remove them with OpenCode's worktree management or git worktree remove." } : {}),
+				} } : {}),
+			})
 		})
 		add("team_shutdown_request", "Request a member shutdown; the team lead controls requests.", runIdInput.extend({ targetMemberName: z.string().min(1) }), async (args, context) => {
 			const actor = await requireActor(args.teamRunId, context.sessionID)
 			if (actor.role !== "lead") throw new ToolError({ message: "team_shutdown_request is lead-only." })
 			await shutdownRequest(actor, args.targetMemberName)
-			controlFor(args.teamRunId).pendingWakeups.add(args.targetMemberName)
-			await pump(args.teamRunId)
+			await requestDelivery(actor.record, [args.targetMemberName])
 			return JSON.stringify({ teamRunId: args.teamRunId, targetMemberName: args.targetMemberName, status: "shutdown_requested" })
 		})
 		add("team_approve_shutdown", "Approve a pending shutdown request for yourself or as team lead.", shutdownMemberInput, async (args, context) => {
 			const actor = await requireActor(args.teamRunId, context.sessionID)
 			if (actor.role !== "lead" && actor.name !== args.memberName) throw new ToolError({ message: "Only the target member or team lead can approve shutdown." })
 			await approveMemberShutdown(actor, args.memberName)
-			for (const member of actor.runtime.members) controlFor(args.teamRunId).pendingWakeups.add(member.name)
 			const target = actor.runtime.members.find((member) => member.name === args.memberName)
 			if (target?.sessionId) await ctx.session.interrupt({ sessionID: target.sessionId })
-			await pump(args.teamRunId)
+			await requestDelivery(actor.record, actor.runtime.members.map((member) => member.name))
 			return JSON.stringify({ teamRunId: args.teamRunId, memberName: args.memberName, status: "shutdown_approved" })
 		})
 		add("team_reject_shutdown", "Reject a pending shutdown request for yourself or as team lead.", shutdownRejectInput, async (args, context) => {
 			const actor = await requireActor(args.teamRunId, context.sessionID)
 			if (actor.role !== "lead" && actor.name !== args.memberName) throw new ToolError({ message: "Only the target member or team lead can reject shutdown." })
 			await rejectMemberShutdown(actor, args.memberName, args.reason)
-			for (const member of actor.runtime.members) controlFor(args.teamRunId).pendingWakeups.add(member.name)
-			await pump(args.teamRunId)
+			await requestDelivery(actor.record, actor.runtime.members.map((member) => member.name))
 			return JSON.stringify({ teamRunId: args.teamRunId, memberName: args.memberName, status: "shutdown_rejected", reason: args.reason })
 		})
 		add("team_send_message", "Send a durable mailbox message to a Team member or broadcast to active and queued members.", sendInput, async (args, context) => {
@@ -1035,9 +1206,7 @@ export function createV2TeamManager(ctx: Plugin.Context, omoConfig: OhMyOpenCode
 			await membership.reserveMessage(args.teamRunId, teamConfig.max_messages_per_run, `tool:${context.id}`)
 			const leader = runtime.members.find((member) => member.agentType === "leader")?.name
 			const sent = await sendMessage(message, args.teamRunId, teamConfig, { isLead: actor.role === "lead", activeMembers: activeRecipients(runtime), leadRecipient: leader })
-			const control = controlFor(args.teamRunId)
-			for (const name of sent.deliveredTo) if (name !== actor.name) control.pendingWakeups.add(name)
-			await pump(args.teamRunId)
+			await requestDelivery(actor.record, sent.deliveredTo.filter((name) => name !== actor.name))
 			return JSON.stringify({ ...sent, queuedForLiveDelivery: sent.deliveredTo })
 		})
 		add("team_task_create", "Create a task in the Team's shared dependency-aware task list.", taskCreateInput, async (args, context) => {
@@ -1087,6 +1256,13 @@ export function createV2TeamManager(ctx: Plugin.Context, omoConfig: OhMyOpenCode
 
 	return {
 		resolveLogicalParent: (sessionID) => membership.resolveLogicalParent(sessionID),
+		async loadOwnership() {
+			for (const record of await membership.listForLocation()) trackOwnedRun(record)
+		},
+		ownsDirectory: (directory) => {
+			const canonicalDirectory = canonicalTeamDirectory(directory)
+			return canonicalDirectory !== leadDirectory && ownedDirectories.has(canonicalDirectory)
+		},
 		async start(input) {
 			if (disposed) throw new Error("Team manager is disposed.")
 			if (started) throw new Error("Team manager has already started.")
@@ -1101,8 +1277,10 @@ export function createV2TeamManager(ctx: Plugin.Context, omoConfig: OhMyOpenCode
 			started = true
 			bootAt = Date.now()
 			eventLoop = watchEvents()
+			startNudgeWatcher()
 			const records = await membership.listForLocation()
 			for (const record of records) {
+				trackOwnedRun(record)
 				const runtime = await loadRuntimeState(record.teamRunId, teamConfig)
 				if (runtime.status !== "active" && runtime.status !== "shutdown_requested") continue
 				scheduleWallClock(record.teamRunId, runtime.createdAt)
@@ -1149,6 +1327,8 @@ export function createV2TeamManager(ctx: Plugin.Context, omoConfig: OhMyOpenCode
 				control.controller.abort(new Error("Team manager disposed."))
 			}
 			eventController.abort(new Error("Team manager disposed."))
+			if (nudgeTimer) clearInterval(nudgeTimer)
+			nudgeTimer = undefined
 			for (const timer of recoveryTimers) clearTimeout(timer)
 			recoveryTimers.length = 0
 			for (const timer of wallClockTimers.values()) clearTimeout(timer)

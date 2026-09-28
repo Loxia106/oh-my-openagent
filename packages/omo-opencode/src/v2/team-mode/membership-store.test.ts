@@ -7,6 +7,7 @@ import { TeamSpecSchema } from "@oh-my-opencode/team-core/types"
 import { createRuntimeState, loadRuntimeState, transitionRuntimeState } from "@oh-my-opencode/team-core/team-state-store"
 import {
 	createV2TeamMembershipStore,
+	v2TeamRunDirectories,
 	V2TeamMembershipError,
 	type TeamLogicalParentResolver,
 } from "./membership-store"
@@ -142,6 +143,37 @@ describe("v2 Team durable logical membership", () => {
 			await expect(f.store.reserveMessage(f.runtime.teamRunId, 1, "tool:call-2"))
 				.rejects.toThrow("max_messages_per_run (1)")
 			expect((await f.store.recordForRun(f.runtime.teamRunId))?.messageCount).toBe(1)
+		} finally {
+			await close(f.baseDir)
+		}
+	})
+
+	test("an isolated member is verified from its own worktree Location and from the lead's, never from elsewhere", async () => {
+		const f = await fixture()
+		const worktree = "/workspace/.omo/worktrees/native-team-worker"
+		try {
+			const bound = await f.store.bindWorktree({ teamRunId: f.runtime.teamRunId, memberName: "worker", directory: worktree })
+			expect(v2TeamRunDirectories(bound)).toEqual(["/workspace", worktree])
+			await expect(f.store.bindWorktree({ teamRunId: f.runtime.teamRunId, memberName: "worker", directory: "/workspace/.omo/worktrees/other" }))
+				.rejects.toThrow("different worktree")
+			await expect(f.store.bindWorktree({ teamRunId: f.runtime.teamRunId, memberName: "lead", directory: worktree }))
+				.rejects.toThrow("no member lead")
+
+			// The member session must actually live in its recorded worktree.
+			await expect(f.store.resolveLogicalParent(f.memberSessionID)).rejects.toThrow("disagrees with its durable Team location")
+			f.sessions.set(f.memberSessionID, session(f.memberSessionID, "project-a", worktree))
+			expect(await f.store.resolveLogicalParent(f.memberSessionID)).toBe(f.leadSessionID)
+
+			const memberLocation = createV2TeamMembershipStore(context({ baseDir: f.baseDir, directory: worktree, sessions: f.sessions }), f.config)
+			expect(await memberLocation.resolveLogicalParent(f.memberSessionID)).toBe(f.leadSessionID)
+			expect(await memberLocation.recordForRun(f.runtime.teamRunId)).toMatchObject({ teamRunId: f.runtime.teamRunId })
+			// Only the lead Location owns (recovers) the run.
+			expect(await memberLocation.listForLocation()).toEqual([])
+			expect((await f.store.listForLocation()).map((record) => record.teamRunId)).toEqual([f.runtime.teamRunId])
+
+			const unrelated = createV2TeamMembershipStore(context({ baseDir: f.baseDir, directory: "/elsewhere", sessions: f.sessions }), f.config)
+			await expect(unrelated.resolveLogicalParent(f.memberSessionID)).rejects.toThrow("another project or workspace")
+			await expect(unrelated.recordForRun(f.runtime.teamRunId)).rejects.toThrow("another project or workspace")
 		} finally {
 			await close(f.baseDir)
 		}

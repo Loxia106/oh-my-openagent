@@ -27,6 +27,8 @@ const MemberBaseSchema = z.object({
   name: z.string().min(1).regex(/^[a-z0-9-]+$/),
   cwd: z.string().optional(),
   worktreePath: z.string().optional(),
+  /** Run this member in its own host-managed worktree (OpenCode 2 native worktree service). */
+  worktree: z.boolean().optional(),
   task_summary: z.string().max(80).optional(),
   subscriptions: z.array(z.string()).optional(),
   backendType: z.enum(["in-process", "tmux"]).default("in-process"),

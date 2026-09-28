@@ -508,11 +508,12 @@ export function createV2DelegationAdmission(input: {
 	childSessions: Map<string, Set<string>>
 	isAliasInvocation: (context: ToolContext) => boolean
 	resolveLogicalParent?: VerifiedLogicalParentResolver
+	managedDirectory?: (directory: string) => boolean
 	isStopped?: (sessionID: string) => boolean | Promise<boolean>
 	childWatchdogMs?: number
 }): V2DelegationAdmission {
 	const { ctx, config, runs, childSessions, isAliasInvocation } = input
-	const admission = createV2BackgroundAdmission(ctx, config.background_task as BackgroundTaskConfig | undefined, undefined, input.resolveLogicalParent)
+	const admission = createV2BackgroundAdmission(ctx, config.background_task as BackgroundTaskConfig | undefined, undefined, input.resolveLogicalParent, input.managedDirectory)
 	const settingsStore = createV2DelegationSettings(ctx.storage, ctx.location)
 	const wrappedExecutors = new WeakMap<NativeSubagent["execute"], NativeSubagent["execute"]>()
 	const trustedChoices = new WeakMap<object, DelegationModelChoice>()

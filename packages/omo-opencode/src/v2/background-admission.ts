@@ -273,6 +273,8 @@ export function createV2BackgroundAdmission(
 	config?: BackgroundTaskConfig,
 	clock: BackgroundAdmissionClock = systemClock,
 	resolveLogicalParent?: VerifiedLogicalParentResolver,
+	/** Other Locations (isolated Team member worktrees) whose sessions this activation manages. */
+	managedDirectory?: (directory: string) => boolean,
 ): V2BackgroundAdmission {
 	const records = new Map<string, StoredLease>()
 	const waiters = new Map<string, SlotWaiter[]>()
@@ -376,8 +378,9 @@ export function createV2BackgroundAdmission(
 		// The public SessionInfo exposes only LocationPublicRef.directory, not
 		// workspaceID. Bind sessions to the exact native plugin location instead
 		// of reading a field that the pinned 2.0.18 SDK does not expose.
-		return info.projectID === ctx.location.project.id &&
-			canonicalDirectory(info.location.directory) === canonicalDirectory(ctx.location.directory)
+		if (info.projectID !== ctx.location.project.id) return false
+		const directory = canonicalDirectory(info.location.directory)
+		return directory === canonicalDirectory(ctx.location.directory) || managedDirectory?.(directory) === true
 	}
 
 	async function parentOf(info: SessionInfo): Promise<string | undefined> {

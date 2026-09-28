@@ -1,5 +1,5 @@
 /** Isolated OpenCode 2.0.18 runtime proof that an active Team recovers after the host process is killed. */
-import { readFile } from "node:fs/promises"
+import { readFile, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import {
 	ROOT, asRecord, contentText, createRootSession, gitState, preflight, prepareIsolation, promptAndWait,
@@ -13,6 +13,8 @@ const CLI = process.env.OPENCODE2_CLI?.trim() ? resolve(process.env.OPENCODE2_CL
 const EXPECTED_SHA = process.env.OPENCODE2_EXPECTED_SERVER_SHA256 ?? ""
 const PASSWORD = "team-restart-local-qa-only"
 const PROBE_ID = "omo-team-restart-origin-probe"
+// OPENCODE2_QA_TEAM_WORKTREE=1 runs both members in isolated native worktrees.
+const WORKTREE = process.env.OPENCODE2_QA_TEAM_WORKTREE === "1"
 // Built-in categories request max/medium variants; expose both so routing stays local.
 const MODELS: QaModel[] = [{ id: "qa-model", context: 200_000, output: 8_192, variants: { max: {}, medium: {} } }]
 
@@ -23,6 +25,13 @@ function teamRunIdIn(request: MockRequest): string | undefined {
 async function main(): Promise<void> {
 	const { actualSHA, cliVersion } = await verifyArtifact(PLUGIN_DIR, EXPECTED_SHA, CLI)
 	const isolation = await prepareIsolation(EVIDENCE, "omo-team-restart-qa-")
+	if (WORKTREE) {
+		await writeFile(join(isolation.project, "README.md"), "restart\n")
+		for (const args of [["init", "-q"], ["add", "README.md"], ["commit", "-q", "-m", "init"]]) {
+			const proc = Bun.spawn(["git", ...args], { cwd: isolation.project, stdout: "ignore", stderr: "pipe", env: { PATH: "/usr/bin:/bin", HOME: isolation.project, GIT_AUTHOR_NAME: "qa", GIT_AUTHOR_EMAIL: "qa@example.invalid", GIT_COMMITTER_NAME: "qa", GIT_COMMITTER_EMAIL: "qa@example.invalid" } })
+			if ((await proc.exited) !== 0) throw new Error(`git ${args.join(" ")} failed`)
+		}
+	}
 	const checks: Check[] = []
 	const check = (name: string, passed: boolean, detail?: unknown) => checks.push({ name, passed, ...(detail === undefined ? {} : { detail }) })
 	const hanging = new Set<ReadableStreamDefaultController<Uint8Array>>()
@@ -41,8 +50,8 @@ async function main(): Promise<void> {
 					version: 1, name: "restart-team", leadAgentId: "lead",
 					members: [
 						{ kind: "subagent_type", name: "lead", subagent_type: "atlas" },
-						{ kind: "category", name: "alpha", category: "unspecified-low", prompt: "TR_ALPHA_ROLE inspect the parser." },
-						{ kind: "category", name: "beta", category: "unspecified-low", prompt: "TR_BETA_ROLE review the tests." },
+						{ kind: "category", name: "alpha", category: "unspecified-low", prompt: "TR_ALPHA_ROLE inspect the parser.", ...(WORKTREE ? { worktree: true } : {}) },
+						{ kind: "category", name: "beta", category: "unspecified-low", prompt: "TR_BETA_ROLE review the tests.", ...(WORKTREE ? { worktree: true } : {}) },
 					],
 				} } }], id, request.model)
 			}
