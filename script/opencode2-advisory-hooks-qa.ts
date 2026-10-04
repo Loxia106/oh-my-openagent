@@ -516,7 +516,7 @@ async function main(): Promise<void> {
 				: undefined) : undefined
 			if (todoCall) return todoCall
 			const planValid = marker === "PLAN_VALID_ACTIVE" ? route("write", (name, step) => step === 0
-				? { name, args: { path: join(planRoot, "active.md"), content: "# Plan\n\n**Effort:** 2 days\n\n## TODOs\n- [ ] T1. Malformed row\n" } }
+				? { name, args: { path: join(planRoot, "active.md"), content: "# Plan\n\n**Effort:** 2 days\n\n## TODOs\n- [ ] Malformed row without a task number\n" } }
 				: undefined) : undefined
 			if (planValid) return planValid
 			const planOutside = route("write", (name, step) => step === 0 && marker === "PLAN_OUTSIDE_ACTIVE"

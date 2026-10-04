@@ -234,11 +234,14 @@ async function main(): Promise<void> {
 		const smallRequests = mock.requests.slice(beforeSmall).filter((item) => item.sessionID === ids.small)
 		const smallCompaction = smallRequests.find((item) => item.kind === "compaction")
 		const truncatedResults = smallCompaction?.toolResults.filter((value) => value.includes("Tool output truncated from")) ?? []
+		// OpenCode 2.0.22 sends the compacted history as a text transcript and cuts long tool output there itself
+		// (`[truncated]`), so the request can be bounded before OMO's hook has anything to shrink.
+		const hostTruncated = (smallCompaction?.users ?? []).reduce((count, value) => count + (value.match(/\n\[truncated\]/g)?.length ?? 0), 0)
 		const smallText = smallCompaction ? [...smallCompaction.system, ...smallCompaction.users, ...smallCompaction.toolResults].join("").length : 0
 		check("experimental.aggressive_truncation bounds large tool results inside the automatic compaction request",
-			Boolean(smallCompaction) && truncatedResults.length >= 1 && smallText <= (60_000 - 4_096) * 4 &&
+			Boolean(smallCompaction) && truncatedResults.length + hostTruncated >= 1 && smallText <= (60_000 - 4_096) * 4 &&
 			(await sessionAssistantText(host, ids.small)).includes("LC_BIG_DONE"),
-			{ sequence: smallRequests.map((item) => item.kind), truncatedResults: truncatedResults.length, compactionChars: smallText, budget: (60_000 - 4_096) * 4 })
+			{ sequence: smallRequests.map((item) => item.kind), truncatedResults: truncatedResults.length, hostTruncated, compactionChars: smallText, budget: (60_000 - 4_096) * 4 })
 
 		// S5: dynamic tool-output truncation from remaining context.
 		ids.grep = await createRootSession(host.client, isolation.project, "LC output truncator", "sisyphus", MODEL)

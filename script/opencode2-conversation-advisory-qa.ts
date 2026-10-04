@@ -15,6 +15,7 @@ import {
   COMMENT_CHECKER_RELEASE_VERSION,
   commentCheckerBinaryName,
   commentCheckerCacheDir,
+  recordCachedCommentCheckerRelease,
   resolveCommentCheckerReleaseAsset,
 } from "../packages/comment-checker-core/src"
 import {
@@ -255,6 +256,9 @@ async function provisionCommentChecker(xdgCache: string, directory: string): Pro
   const invocationLog = join(directory, "checker-invocations.log")
   const wrapperSource = "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$COMMENT_CHECKER_QA_LOG\"\nexec \"$COMMENT_CHECKER_QA_REAL\" \"$@\"\n"
   await writeFile(wrapperPath, wrapperSource, { mode: 0o755 })
+  // Since v5.1 the plugin trusts the cached slot only beside a release marker (#8850); without it the
+  // plugin downloads the pinned release over the wrapper and the invocation log stays empty.
+  recordCachedCommentCheckerRelease(cacheDir)
   const smokeInput = JSON.stringify({
     session_id: "qa-provision-smoke", tool_name: "Write", transcript_path: "", cwd: directory,
     hook_event_name: "PostToolUse",
