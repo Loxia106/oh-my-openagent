@@ -84,7 +84,7 @@ describe("native V2 plan format validator", () => {
 	test("normalizes Effort, warns on malformed task rows, and preserves native structured output", async () => {
 		const { workspace, plans } = await setupWorkspace()
 		const file = join(plans, "active.md")
-		await writeFile(file, "# Plan\n\n**Effort:** 2 days\n\n## TODOs\n- [ ] 1. Correct row\n- [ ] T2. Malformed row\n")
+		await writeFile(file, "# Plan\n\n**Effort:** 2 days\n\n## TODOs\n- [ ] 1. Correct row\n- [ ] Malformed row without a task number\n")
 		const harness = makeHarness(workspace)
 		const cleanup = await registerV2PlanFormatValidator(harness.ctx, {} as OhMyOpenCodeConfig)
 		const nativeEvent = event(await realpath(file))

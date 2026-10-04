@@ -50,7 +50,6 @@
     "effect": "4.0.0-rc.112",
     "jsonc-parser": "^3.3.1",
     "picocolors": "^1.1.1",
-    "picomatch": "^4.0.7",
     "zod": "^4.6.5"
   },
   "devDependencies": {

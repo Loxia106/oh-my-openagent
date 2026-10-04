@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test"
-import { mkdir, rm, writeFile } from "node:fs/promises"
+import { mkdir, writeFile } from "node:fs/promises"
 import { hostname } from "node:os"
 import { join } from "node:path"
 
@@ -16,13 +16,14 @@ import {
   type FakeDeps,
 } from "./commands.test-support"
 import { registerDoctorCommand } from "./doctor"
+import { removeTree } from "../../../../../../test-support/remove-tree"
 
 const tempDirs: string[] = []
 
 setDefaultTimeout(process.platform === "win32" ? 30000 : 5000)
 
 afterEach(async () => {
-  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })))
+  await Promise.all(tempDirs.splice(0).map((dir) => removeTree(dir, { maxRetries: 10, retryDelay: 200 })))
 })
 
 const SEEDS = [
@@ -74,6 +75,16 @@ Changes to these files only take effect after a git commit. Use the memory tools
 const V1_PERSONA_SEED = `---\ndescription: Persona - who I am\n---\n${V1_PERSONA_BODY}`
 
 describe("/doctor", () => {
+  test("#given registration #when doctor is not invoked #then no identity or settings are resolved", () => {
+    const pi = new MemoryFakeExtensionAPI()
+    registerDoctorCommand(pi, {
+      contextForSession: () => { throw new Error("registration resolved identity") },
+      bustPromptCache: () => { throw new Error("registration cleared prompt cache") },
+      loadSettings: () => { throw new Error("registration loaded settings") },
+    })
+    expect(pi.commands.find((command) => command.name === "doctor")?.options.description).toBe("Run deterministic memory health checks and repair skill frontmatter.")
+  })
+
   test("#given a healthy repository #when doctor runs #then every deterministic check passes", async () => {
     // given
     const { pi, ctx } = await harness()
