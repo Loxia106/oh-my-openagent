@@ -1,5 +1,5 @@
 /**
- * Isolated OpenCode 2.0.18 QA for native conversation advisory hooks.
+ * Isolated OpenCode 2.0.22 QA for native conversation advisory hooks.
  * Full mode requires explicit OPENCODE2_CLI and OPENCODE2_EXPECTED_SERVER_SHA256.
  * Set OPENCODE2_QA_PROVISION_ONLY=1 to provision and offline-smoke the pinned
  * comment-checker binary without starting OpenCode.
@@ -558,7 +558,7 @@ async function main(): Promise<void> {
     currentHost = host
     const versionResult = Bun.spawnSync([CLI, "--version"], { cwd: hostCwd, env, stdout: "pipe", stderr: "pipe" })
     version = versionResult.stdout.toString().trim()
-    assert(versionResult.exitCode === 0 && version.includes("2.0.18"), "Expected OpenCode 2.0.18, got " + version)
+    assert(versionResult.exitCode === 0 && version.includes("2.0.22"), "Expected OpenCode 2.0.22, got " + version)
     const readyUntil = Date.now() + 20_000
     let ready = false
     while (Date.now() < readyUntil && !ready) {
@@ -684,7 +684,7 @@ async function main(): Promise<void> {
     mockStopped = true
 
     const allScenarioRuns = Object.values(scenarios)
-    checks.pinnedHostAndBundle = version.includes("2.0.18") && bundleHash === EXPECTED_SERVER_SHA256
+    checks.pinnedHostAndBundle = version.includes("2.0.22") && bundleHash === EXPECTED_SERVER_SHA256
     checks.localOnlyProviderCatalogAndNoMcp = Object.keys(catalog).length === 2 && Object.values(catalog).every((value) => {
       const row = value as { models: string[]; providers: string[]; mcpNames: string[] }
       return stableJson(row.models) === stableJson([PROVIDER + "/" + MODEL]) && stableJson(row.providers) === stableJson([PROVIDER]) && row.mcpNames.length === 0

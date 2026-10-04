@@ -1,5 +1,5 @@
 /**
- * Isolated native OpenCode 2.0.18 QA for OMO's todo, plan, and agent-use hooks.
+ * Isolated native OpenCode 2.0.22 QA for OMO's todo, plan, and agent-use hooks.
  * Run only after a reviewed `build:opencode2` freeze:
  * OPENCODE2_CLI=/absolute/path/to/opencode \
  * OPENCODE2_EXPECTED_SERVER_SHA256=<64-hex-sha256> \
@@ -323,7 +323,7 @@ async function waitForReady(host: HostRun): Promise<{ agentIDs: string[]; plugin
 }
 
 async function main(): Promise<void> {
-	assert(CLI_INPUT && isAbsolute(CLI_INPUT) && existsSync(CLI), "Set OPENCODE2_CLI to an explicit absolute path to the pinned OpenCode 2.0.18 executable")
+	assert(CLI_INPUT && isAbsolute(CLI_INPUT) && existsSync(CLI), "Set OPENCODE2_CLI to an explicit absolute path to the pinned OpenCode 2.0.22 executable")
 	assert(/^[a-f0-9]{64}$/i.test(EXPECTED_SERVER_SHA256), "Set OPENCODE2_EXPECTED_SERVER_SHA256 to the expected 64-character server bundle hash")
 	const evidenceRelative = relative(EVIDENCE_ROOT, EVIDENCE)
 	assert(evidenceRelative !== "" && evidenceRelative !== ".." && !evidenceRelative.startsWith(`..${sep}`) && !isAbsolute(evidenceRelative) && !evidenceRelative.includes(sep),
@@ -618,7 +618,7 @@ async function main(): Promise<void> {
 		activeHost = host
 		const versionResult = Bun.spawnSync([CLI, "--version"], { cwd: hostCwd, env: { ...envBase, OPENCODE_DB: databasePath }, stdout: "pipe", stderr: "pipe" })
 		const version = new TextDecoder().decode(versionResult.stdout).trim()
-		assert(versionResult.exitCode === 0 && version.includes("2.0.18"), `Expected OpenCode 2.0.18, received ${version}`)
+		assert(versionResult.exitCode === 0 && version.includes("2.0.22"), `Expected OpenCode 2.0.22, received ${version}`)
 		const deadline = Date.now() + 20_000
 		let ready = false
 		while (Date.now() < deadline && !ready) {
@@ -690,7 +690,7 @@ async function main(): Promise<void> {
 	try {
 		const versionResult = Bun.spawnSync([CLI, "--version"], { cwd: hostCwd, env: { ...envBase, OPENCODE_DB: databasePaths.baseline }, stdout: "pipe", stderr: "pipe" })
 		version = new TextDecoder().decode(versionResult.stdout).trim()
-		assert(versionResult.exitCode === 0 && version.includes("2.0.18"), `Expected OpenCode 2.0.18, received ${version}`)
+		assert(versionResult.exitCode === 0 && version.includes("2.0.22"), `Expected OpenCode 2.0.22, received ${version}`)
 		await writeOmoConfig(projectCanonical, ["todo-description-override"])
 		const baseline = await startHost("baseline")
 		const baselineRun = await promptInSession(baseline, "TODO_SCHEMA_BASELINE")
@@ -754,7 +754,7 @@ async function main(): Promise<void> {
 		mock.stop(true)
 		mockStopped = true
 
-		checks.explicitPinnedRuntime = version.includes("2.0.18") && CLI_INPUT === CLI
+		checks.explicitPinnedRuntime = version.includes("2.0.22") && CLI_INPUT === CLI
 		checks.frozenBundleHash = bundleHash === EXPECTED_SERVER_SHA256
 		checks.localOnlyCatalogAndNoMcp = Object.keys(catalogPreflights).length === 3
 			&& Object.values(catalogPreflights).every((entry) => stableJson(entry.modelIDs) === stableJson([`${PROVIDER}/${MODEL}`])

@@ -1,4 +1,4 @@
-/** Isolated OpenCode 2.0.18 runtime proof for hashline mode: LINE#ID read, edit, write summary and string edits. */
+/** Isolated OpenCode 2.0.22 runtime proof for hashline mode: LINE#ID read, edit, write summary and string edits. */
 import { readFile, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import {

@@ -175,16 +175,16 @@
   },
   "homepage": "https://github.com/code-yeongyu/oh-my-openagent#readme",
   "dependencies": {
-    "@opencode/client": "2.0.18",
-    "@opencode/plugin": "2.0.18",
-    "@opencode/schema": "2.0.18",
+    "@opencode/client": "2.0.22",
+    "@opencode/plugin": "2.0.22",
+    "@opencode/schema": "2.0.22",
     "@opentui/solid": "^0.5.11",
     "detect-libc": "^2.1.2",
     "effect": "4.0.0-rc.112",
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@opencode/ai": "2.0.18",
+    "@opencode/ai": "2.0.22",
     "@clack/prompts": "^1.8.1",
     "@code-yeongyu/senpi": "2026.10.6",
     "@modelcontextprotocol/sdk": "^1.30.0",

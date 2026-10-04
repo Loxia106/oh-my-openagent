@@ -542,7 +542,7 @@ async function main(): Promise<void> {
   let failure: unknown
   const startedAt = new Date().toISOString()
   try {
-    addCheck(checks, "pinned OpenCode 2.0.18 CLI", versionResult.exitCode === 0 && version.includes("2.0.18"), version)
+    addCheck(checks, "pinned OpenCode 2.0.22 CLI", versionResult.exitCode === 0 && version.includes("2.0.22"), version)
     await writeFile(join(EVIDENCE, "fixture-config-redacted.json"), JSON.stringify({
       opencode: {
         ...projectConfig,
@@ -877,7 +877,7 @@ async function main(): Promise<void> {
     await writeFile(join(EVIDENCE, "runtime.json"), JSON.stringify(output, null, 2) + "\n")
     await writeFile(join(EVIDENCE, "summary.txt"), [
       "WHAT WAS TESTED: Immediate first-user default goal start; automatic continuation pause/resume/completion; rejected first input; existing goal preservation; native child exclusion.",
-      "SAFETY: Pinned OpenCode 2.0.18 bundle, exact localhost-only provider/model/default/MCP preflight, isolated HOME/XDG/OMO/SQLite/project, fake credential only.",
+      "SAFETY: Pinned OpenCode 2.0.22 bundle, exact localhost-only provider/model/default/MCP preflight, isolated HOME/XDG/OMO/SQLite/project, fake credential only.",
       "TIMING: The initial model response is immediate (no artificial delay). runtime.json records the inbox event, provider request/response timestamps, and message history after execution.",
       "LIMIT: Deterministic localhost mock responses do not measure model quality. Full prompts and provider request bodies are not persisted.",
       "Evidence directory: " + EVIDENCE,

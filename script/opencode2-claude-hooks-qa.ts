@@ -1,4 +1,4 @@
-/** Isolated OpenCode 2.0.18 runtime proof for native Claude conversation hooks. */
+/** Isolated OpenCode 2.0.22 runtime proof for native Claude conversation hooks. */
 import { createHash } from "node:crypto"
 import { existsSync } from "node:fs"
 import { chmod, mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises"
@@ -219,13 +219,13 @@ async function createRootSession(client: ReturnType<typeof OpenCode.make>, direc
 }
 
 async function main(): Promise<void> {
-	assert(CLI_INPUT && isAbsolute(CLI_INPUT) && existsSync(CLI), "Set OPENCODE2_CLI to an explicit absolute OpenCode 2.0.18 executable")
+	assert(CLI_INPUT && isAbsolute(CLI_INPUT) && existsSync(CLI), "Set OPENCODE2_CLI to an explicit absolute OpenCode 2.0.22 executable")
 	assert(/^[a-f0-9]{64}$/i.test(EXPECTED_SHA), "Set OPENCODE2_EXPECTED_SERVER_SHA256 to the frozen server SHA-256")
 	assert(existsSync(join(PLUGIN_DIR, "server.js")), `Missing frozen server bundle at ${PLUGIN_DIR}`)
 	const actualSHA = createHash("sha256").update(await readFile(join(PLUGIN_DIR, "server.js"))).digest("hex")
 	assert(actualSHA === EXPECTED_SHA, `Frozen bundle hash mismatch: expected ${EXPECTED_SHA}, got ${actualSHA}`)
 	const version = Bun.spawnSync([CLI, "--version"], { stdout: "pipe", stderr: "pipe" })
-	assert(version.exitCode === 0 && version.stdout.toString().includes("2.0.18"), `Expected OpenCode 2.0.18: ${version.stdout.toString()} ${version.stderr.toString()}`)
+	assert(version.exitCode === 0 && version.stdout.toString().includes("2.0.22"), `Expected OpenCode 2.0.22: ${version.stdout.toString()} ${version.stderr.toString()}`)
 
 	const evidenceRoot = join(ROOT, ".omo/evidence")
 	const evidence = await realpath(EVIDENCE).catch(async () => { await mkdir(EVIDENCE, { recursive: true }); return realpath(EVIDENCE) })
@@ -512,7 +512,7 @@ async function main(): Promise<void> {
 		}
 		assert(active, `Native isolated preflight failed: ${JSON.stringify(registryRows)}`)
 		registry = registryRows
-		check("r9 artifact and OpenCode version are exact", actualSHA === EXPECTED_SHA && cliVersion.includes("2.0.18"), { actualSHA, cliVersion })
+		check("r9 artifact and OpenCode version are exact", actualSHA === EXPECTED_SHA && cliVersion.includes("2.0.22"), { actualSHA, cliVersion })
 		check("both plugins active with exactly one local model/provider and no MCP", active, registryRows)
 
 		sessionID = await createRootSession(host.client, projectDirectory, "Claude hooks isolated QA")

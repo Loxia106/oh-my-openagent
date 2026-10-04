@@ -207,7 +207,7 @@ async function waitForServer(client: ReturnType<typeof OpenCode.make>, process: 
 		}
 	}
 	const detail = lastError instanceof Error ? ` Last API error: ${lastError.message}` : ""
-	throw new Error(`OpenCode 2.0.18 did not become ready within 20 seconds.${detail}`)
+	throw new Error(`OpenCode 2.0.22 did not become ready within 20 seconds.${detail}`)
 }
 
 async function waitForAgentRegistry(client: ReturnType<typeof OpenCode.make>, process: Bun.Subprocess) {
@@ -269,12 +269,12 @@ async function stopProcess(process: Bun.Subprocess | undefined): Promise<void> {
 }
 
 async function main(): Promise<void> {
-	if (!OPENCODE_BIN || !existsSync(OPENCODE_BIN)) throw new Error(`OpenCode CLI not found on PATH; set OPENCODE2_CLI to the pinned OpenCode v2.0.18 executable.`)
+	if (!OPENCODE_BIN || !existsSync(OPENCODE_BIN)) throw new Error(`OpenCode CLI not found on PATH; set OPENCODE2_CLI to the pinned OpenCode v2.0.22 executable.`)
 	if (!existsSync(join(PLUGIN_DIR, "server.js"))) throw new Error(`Native plugin bundle missing ${join(PLUGIN_DIR, "server.js")}; run bun run build:opencode2 or set OPENCODE2_PLUGIN_DIR.`)
 	await mkdirs([EVIDENCE])
 	const versionResult = Bun.spawnSync([OPENCODE_BIN, "--version"], { stdout: "pipe", stderr: "pipe" })
 	const version = new TextDecoder().decode(versionResult.stdout).trim()
-	if (!version.includes("2.0.18")) throw new Error(`Expected the pinned real runtime 2.0.18, received: ${version}`)
+	if (!version.includes("2.0.22")) throw new Error(`Expected the pinned real runtime 2.0.22, received: ${version}`)
 
 	const tempRootCreated = await mkdtemp(join(tmpdir(), "opencode2-omo-qa-"))
 	const tempRoot = await realpath(tempRootCreated)

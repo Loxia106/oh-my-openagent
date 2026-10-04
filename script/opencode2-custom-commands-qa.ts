@@ -1,5 +1,5 @@
 /**
- * Isolated OpenCode 2.0.18 custom-command smoke using a localhost mock only.
+ * Isolated OpenCode 2.0.22 custom-command smoke using a localhost mock only.
  * Run with explicit binaries/frozen artifact:
  * OPENCODE2_CLI=/absolute/path/opencode \
  * OPENCODE2_EXPECTED_SERVER_SHA256=<64-hex-sha256> \
@@ -151,7 +151,7 @@ function frontmatter(description: string, body: string, options: Record<string, 
 }
 
 async function main(): Promise<void> {
-	assert(OPENCODE_BIN && existsSync(OPENCODE_BIN), "Set OPENCODE2_CLI to an explicit absolute path to the pinned OpenCode 2.0.18 executable")
+	assert(OPENCODE_BIN && existsSync(OPENCODE_BIN), "Set OPENCODE2_CLI to an explicit absolute path to the pinned OpenCode 2.0.22 executable")
 	assert(isAbsolute(OPENCODE_CLI_INPUT), "OPENCODE2_CLI must be an absolute path")
 	assert(/^[a-f0-9]{64}$/i.test(EXPECTED_SERVER_SHA256), "Set OPENCODE2_EXPECTED_SERVER_SHA256 to the expected 64-character bundle SHA-256")
 	const evidenceRelative = relative(EVIDENCE_ROOT, EVIDENCE)
@@ -168,7 +168,7 @@ async function main(): Promise<void> {
 	assert(serverHash === EXPECTED_SERVER_SHA256, `Unexpected bundle hash ${serverHash}; expected the frozen accepted bundle ${EXPECTED_SERVER_SHA256}`)
 	const versionResult = Bun.spawnSync([OPENCODE_BIN, "--version"], { stdout: "pipe", stderr: "pipe" })
 	const version = new TextDecoder().decode(versionResult.stdout).trim()
-	assert(versionResult.exitCode === 0 && version.includes("2.0.18"), `Expected OpenCode 2.0.18, got ${version}`)
+	assert(versionResult.exitCode === 0 && version.includes("2.0.22"), `Expected OpenCode 2.0.22, got ${version}`)
 
 	const runDirectory = join(EVIDENCE, `host-run-${Date.now()}`)
 	await mkdir(runDirectory, { recursive: true })
@@ -330,7 +330,7 @@ async function main(): Promise<void> {
 	const beforeSessionCount = countSessions(databasePath)
 
 	try {
-		assert(versionProcess.exitCode === 0 && version.includes("2.0.18"), `Expected OpenCode 2.0.18, got ${version}`)
+		assert(versionProcess.exitCode === 0 && version.includes("2.0.22"), `Expected OpenCode 2.0.22, got ${version}`)
 		assert(!project.startsWith(`${ROOT}/`), `QA project must be outside the repository: ${project}`)
 		await writeFile(join(runDirectory, "opencode-config-redacted.json"), JSON.stringify({
 			...projectConfig,

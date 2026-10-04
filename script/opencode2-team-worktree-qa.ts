@@ -1,4 +1,4 @@
-/** Isolated OpenCode 2.0.18 runtime proof for Team members isolated in native host-managed worktrees. */
+/** Isolated OpenCode 2.0.22 runtime proof for Team members isolated in native host-managed worktrees. */
 import { readFile, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import {

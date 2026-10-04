@@ -261,7 +261,7 @@ function selectedModel(value: unknown): string | undefined {
 }
 
 async function main(): Promise<void> {
-	if (!OPENCODE_BIN) throw new Error("OPENCODE2_CLI must be set to an explicit absolute path for the pinned OpenCode 2.0.18 executable.")
+	if (!OPENCODE_BIN) throw new Error("OPENCODE2_CLI must be set to an explicit absolute path for the pinned OpenCode 2.0.22 executable.")
 	if (!existsSync(OPENCODE_BIN)) throw new Error(`OpenCode CLI not found at ${OPENCODE_BIN}.`)
 	if (!EXPECTED_SERVER_SHA256) throw new Error("OPENCODE2_EXPECTED_SERVER_SHA256 must be set to the reviewed frozen server bundle hash.")
 	const serverPath = join(PLUGIN_DIR, "server.js")
@@ -345,7 +345,7 @@ async function main(): Promise<void> {
 	try {
 		const versionResult = Bun.spawnSync([OPENCODE_BIN, "--version"], { stdout: "pipe", stderr: "pipe", env: childEnvironment })
 		version = new TextDecoder().decode(versionResult.stdout).trim()
-		if (!version.includes("2.0.18")) throw new Error(`Expected OpenCode 2.0.18, got ${version}`)
+		if (!version.includes("2.0.22")) throw new Error(`Expected OpenCode 2.0.22, got ${version}`)
 
 		const originHookDirectory = join(tempRoot, "omo-admission-origin-hook")
 		const initialPluginOrder = RELOAD_SCENARIO_ENABLED ? [originHookDirectory, PLUGIN_DIR] : [PLUGIN_DIR, originHookDirectory]
@@ -760,7 +760,7 @@ async function main(): Promise<void> {
 			const [pluginsDuring, serverInfoDuring, agentsDuring] = await Promise.all([client.plugin.list(), client.server.info(), client.agent.list()])
 			originProbeActive = pluginsDuring.data.some((plugin) => plugin.id === "omo-native-admission-origin-probe" && plugin.state.status === "active")
 			assert("config reload removes only OMO and keeps the origin probe active", !pluginsDuring.data.some((plugin) => plugin.id === "oh-my-openagent") && originProbeActive, pluginsDuring.data)
-			assert("public server remains healthy in the same process while OMO is absent", serverInfoBefore.version.includes("2.0.18") && serverInfoDuring.version === serverInfoBefore.version && serverInfoDuring.pid === serverInfoBefore.pid && serverInfoDuring.pid === serverProcess?.pid && agentsDuring.data.some((agent) => agent.id === "explore"), { processPid: serverProcess?.pid, before: serverInfoBefore, during: serverInfoDuring, agentCount: agentsDuring.data.length })
+			assert("public server remains healthy in the same process while OMO is absent", serverInfoBefore.version.includes("2.0.22") && serverInfoDuring.version === serverInfoBefore.version && serverInfoDuring.pid === serverInfoBefore.pid && serverInfoDuring.pid === serverProcess?.pid && agentsDuring.data.some((agent) => agent.id === "explore"), { processPid: serverProcess?.pid, before: serverInfoBefore, during: serverInfoDuring, agentCount: agentsDuring.data.length })
 			reloadScenarioEvidence = { ...reloadScenarioEvidence, pluginIdsWhileAbsent: pluginsDuring.data.map((plugin) => plugin.id), serverPidWhileAbsent: serverInfoDuring.pid, healthyAgentCountWhileAbsent: agentsDuring.data.length, originProbeActiveWhileAbsent: originProbeActive }
 
 			childRelease.get(CHILD_MARKERS[6])!.resolve()
@@ -907,7 +907,7 @@ async function main(): Promise<void> {
 		await writeFile(join(evidence, "SHA256SUMS"), `${manifest.join("\n")}\n`, "utf8")
 	}
 	if (failure) throw new Error(`Native admission QA failed; evidence: ${evidence}; ${failure instanceof Error ? failure.message : String(failure)}`)
-	console.log(`Native OpenCode 2.0.18 admission QA passed; evidence: ${evidence}`)
+	console.log(`Native OpenCode 2.0.22 admission QA passed; evidence: ${evidence}`)
 }
 
 await main()

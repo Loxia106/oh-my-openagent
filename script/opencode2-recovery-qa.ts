@@ -265,14 +265,14 @@ function fixturePluginSource(): string {
 }
 
 async function main(): Promise<void> {
-  if (!OPENCODE_BIN || !isAbsolute(process.env.OPENCODE2_CLI ?? "") || !existsSync(OPENCODE_BIN)) throw new Error("Set OPENCODE2_CLI to the absolute path of the pinned OpenCode 2.0.18 binary.")
+  if (!OPENCODE_BIN || !isAbsolute(process.env.OPENCODE2_CLI ?? "") || !existsSync(OPENCODE_BIN)) throw new Error("Set OPENCODE2_CLI to the absolute path of the pinned OpenCode 2.0.22 binary.")
   if (!existsSync(join(PLUGIN_DIR, "server.js"))) throw new Error("Native bundle missing at " + PLUGIN_DIR)
   if (!/^[a-f0-9]{64}$/i.test(EXPECTED_SERVER_SHA256) || await fileHash(join(PLUGIN_DIR, "server.js")) !== EXPECTED_SERVER_SHA256.toLowerCase()) {
     throw new Error("Set OPENCODE2_EXPECTED_SERVER_SHA256 to the reviewed native server bundle hash.")
   }
   const versionResult = Bun.spawnSync([OPENCODE_BIN, "--version"], { stdout: "pipe", stderr: "pipe" })
   const version = new TextDecoder().decode(versionResult.stdout).trim()
-  if (!version.includes("2.0.18")) throw new Error("Expected OpenCode 2.0.18, got " + version)
+  if (!version.includes("2.0.22")) throw new Error("Expected OpenCode 2.0.22, got " + version)
 
   const stamp = new Date().toISOString().replaceAll(":", "-")
   const evidence = resolve(process.env.OPENCODE2_RECOVERY_EVIDENCE_DIR ?? join(ROOT, ".omo", "evidence", "20260927-opencode2-recovery-hooks", "runtime-" + stamp))

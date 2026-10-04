@@ -1,4 +1,4 @@
-/** Shared isolated OpenCode 2.0.18 host harness for the native OMO QA drivers. */
+/** Shared isolated OpenCode 2.0.22 host harness for the native OMO QA drivers. */
 import { createHash } from "node:crypto"
 import { existsSync } from "node:fs"
 import { mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises"
@@ -219,13 +219,13 @@ export type Isolation = {
 }
 
 export async function verifyArtifact(pluginDir: string, expectedSHA: string, cli: string): Promise<{ actualSHA: string; cliVersion: string }> {
-	assert(cli && isAbsolute(cli) && existsSync(cli), "Set OPENCODE2_CLI to an explicit absolute OpenCode 2.0.18 executable")
+	assert(cli && isAbsolute(cli) && existsSync(cli), "Set OPENCODE2_CLI to an explicit absolute OpenCode 2.0.22 executable")
 	assert(/^[a-f0-9]{64}$/i.test(expectedSHA), "Set OPENCODE2_EXPECTED_SERVER_SHA256 to the frozen server SHA-256")
 	assert(existsSync(join(pluginDir, "server.js")), `Missing frozen server bundle at ${pluginDir}`)
 	const actualSHA = createHash("sha256").update(await readFile(join(pluginDir, "server.js"))).digest("hex")
 	assert(actualSHA === expectedSHA, `Frozen bundle hash mismatch: expected ${expectedSHA}, got ${actualSHA}`)
 	const version = Bun.spawnSync([cli, "--version"], { stdout: "pipe", stderr: "pipe" })
-	assert(version.exitCode === 0 && version.stdout.toString().includes("2.0.18"), `Expected OpenCode 2.0.18: ${version.stdout.toString()} ${version.stderr.toString()}`)
+	assert(version.exitCode === 0 && version.stdout.toString().includes("2.0.22"), `Expected OpenCode 2.0.22: ${version.stdout.toString()} ${version.stderr.toString()}`)
 	return { actualSHA, cliVersion: version.stdout.toString().trim() }
 }
 

@@ -1,5 +1,5 @@
 /**
- * Local-only OpenCode 2.0.18 QA for native delegated runtime fallback.
+ * Local-only OpenCode 2.0.22 QA for native delegated runtime fallback.
  *
  * Run only against an explicitly frozen bundle:
  * OPENCODE2_CLI=/absolute/path/to/opencode \
@@ -776,7 +776,7 @@ async function main(): Promise<void> {
 
 		const versionResult = Bun.spawnSync([CLI, "--version"], { cwd: serverCwd, env: openCodeEnvironment, stdout: "pipe", stderr: "pipe" })
 		version = new TextDecoder().decode(versionResult.stdout).trim()
-		assert(versionResult.exitCode === 0 && version.includes("2.0.18"), `Expected isolated OpenCode 2.0.18; got ${version}`)
+		assert(versionResult.exitCode === 0 && version.includes("2.0.22"), `Expected isolated OpenCode 2.0.22; got ${version}`)
 		assert(createHash("sha256").update(await readFile(serverPath)).digest("hex") === EXPECTED_SERVER_SHA256.toLowerCase(), "Frozen bundle changed before launch")
 
 		const port = reservePort()
@@ -1071,7 +1071,7 @@ async function main(): Promise<void> {
 		checks.push({ name: "only fixture-owned host/mock stopped and isolated database retained", passed:
 			serverShutdown.stopped && mockStopped && existsSync(tempRoot) && beforeSessionCount === 0 && (afterSessionCount ?? 0) > 0, detail: cleanup })
 		const runtime = {
-			purpose: "Native foreground/background delegated provider-failure recovery on OpenCode 2.0.18 using localhost-only model endpoints.",
+			purpose: "Native foreground/background delegated provider-failure recovery on OpenCode 2.0.22 using localhost-only model endpoints.",
 			startedAt: runResult.startedAt,
 			finishedAt: new Date().toISOString(),
 			cli: CLI,

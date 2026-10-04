@@ -105,7 +105,7 @@ async function waitForServer(client: ReturnType<typeof OpenCode.make>, process: 
 			await new Promise((resolve) => setTimeout(resolve, 150))
 		}
 	}
-	throw new Error(`OpenCode 2.0.18 did not become ready. ${lastError instanceof Error ? lastError.message : ""}`)
+	throw new Error(`OpenCode 2.0.22 did not become ready. ${lastError instanceof Error ? lastError.message : ""}`)
 }
 
 async function waitForAgents(client: ReturnType<typeof OpenCode.make>, process: Bun.Subprocess) {
@@ -194,11 +194,11 @@ async function stopTui(process: Bun.Subprocess | undefined, terminal: Bun.Termin
 }
 
 async function main(): Promise<void> {
-	if (!OPENCODE_BIN || !existsSync(OPENCODE_BIN)) throw new Error("Set OPENCODE2_CLI to the pinned OpenCode 2.0.18 executable.")
+	if (!OPENCODE_BIN || !existsSync(OPENCODE_BIN)) throw new Error("Set OPENCODE2_CLI to the pinned OpenCode 2.0.22 executable.")
 	if (!existsSync(join(PLUGIN_DIR, "server.js"))) throw new Error(`Native plugin bundle not found: ${join(PLUGIN_DIR, "server.js")}`)
 	const versionResult = Bun.spawnSync([OPENCODE_BIN, "--version"], { stdout: "pipe", stderr: "pipe" })
 	const version = new TextDecoder().decode(versionResult.stdout).trim()
-	if (!version.includes("2.0.18")) throw new Error(`Expected OpenCode 2.0.18, got ${version}`)
+	if (!version.includes("2.0.22")) throw new Error(`Expected OpenCode 2.0.22, got ${version}`)
 	await mkdir(EVIDENCE, { recursive: true })
 
 	const tempRoot = await realpath(await mkdtemp(join(tmpdir(), "opencode2-command-qa-")))

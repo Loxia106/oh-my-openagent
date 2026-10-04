@@ -41,9 +41,9 @@
     "@oh-my-opencode/utils": "workspace:*",
     "@opencode-ai/plugin": "1.18.31",
     "@opencode-ai/sdk": "1.18.31",
-    "@opencode/client": "2.0.18",
-    "@opencode/plugin": "2.0.18",
-    "@opencode/schema": "2.0.18",
+    "@opencode/client": "2.0.22",
+    "@opencode/plugin": "2.0.22",
+    "@opencode/schema": "2.0.22",
     "@opentui/solid": "^0.5.11",
     "solid-js": "1.9.12",
     "commander": "^15.0.0",
@@ -53,6 +53,6 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@opencode/ai": "2.0.18"
+    "@opencode/ai": "2.0.22"
   }
 }

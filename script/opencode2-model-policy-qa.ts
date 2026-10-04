@@ -1,4 +1,4 @@
-/** Isolated OpenCode 2.0.18 runtime proof for OMO model policies: retry-time fallback, timeout watchdog, ultrawork and model_fallback. */
+/** Isolated OpenCode 2.0.22 runtime proof for OMO model policies: retry-time fallback, timeout watchdog, ultrawork and model_fallback. */
 import { readFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import {

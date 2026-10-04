@@ -1,4 +1,4 @@
-/** Isolated OpenCode 2.0.18 proof that final request settings match the requested model (Claude 5 thinking, GPT temperature). */
+/** Isolated OpenCode 2.0.22 proof that final request settings match the requested model (Claude 5 thinking, GPT temperature). */
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import {

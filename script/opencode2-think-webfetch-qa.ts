@@ -1,5 +1,5 @@
 /**
- * Local-only OpenCode 2.0.18 runtime check for request-local think mode and
+ * Local-only OpenCode 2.0.22 runtime check for request-local think mode and
  * native webfetch redirect handling. Requires a frozen plugin bundle.
  */
 import { createHash } from "node:crypto"
@@ -428,7 +428,7 @@ async function main(): Promise<void> {
 	}
 	const cliVersion = Bun.spawnSync([CLI, "--version"], { cwd: serverCwd, env: environment, stdout: "pipe", stderr: "pipe" })
 	const version = cliVersion.stdout.toString().trim()
-	assert(cliVersion.exitCode === 0 && version.includes("2.0.18"), `Expected OpenCode 2.0.18, got ${version}`)
+	assert(cliVersion.exitCode === 0 && version.includes("2.0.22"), `Expected OpenCode 2.0.22, got ${version}`)
 	const serverPort = reservePort()
 	const serverCommand = [CLI, "--print-logs", "--log-level", "debug", "serve", "--hostname", "127.0.0.1", "--port", String(serverPort)]
 	const hostProcess = Bun.spawn(serverCommand, { cwd: serverCwd, env: environment, stdout: "pipe", stderr: "pipe" })
@@ -451,7 +451,7 @@ async function main(): Promise<void> {
 	try {
 		await waitForHost(host)
 		registry = await waitForRegistry(host, projectDirectory)
-		check("frozen native host and plugin artifact match", bundleHash === EXPECTED_SERVER_SHA256 && version.includes("2.0.18"), { version, bundleHash })
+		check("frozen native host and plugin artifact match", bundleHash === EXPECTED_SERVER_SHA256 && version.includes("2.0.22"), { version, bundleHash })
 		check("preprompt registry is isolated to one local provider/model and no MCP", JSON.stringify(registry.modelIDs) === JSON.stringify([`${PROVIDER}/${MODEL}`]) && JSON.stringify(registry.providerIDs) === JSON.stringify([PROVIDER]) && registry.defaultModel === `${PROVIDER}/${MODEL}` && JSON.stringify(registry.mcpIDs) === "[]", registry)
 		const agent = (await host.client.agent.get({ agentID: "sisyphus" })).data
 		check("native Sisyphus agent is available before prompts", agent.id === "sisyphus" && !agent.hidden, { id: agent.id, hidden: agent.hidden })

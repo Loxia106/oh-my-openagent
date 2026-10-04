@@ -366,7 +366,7 @@ function skillRule(info: unknown, skillID: string, effect: string): boolean {
 }
 
 async function main(): Promise<void> {
-  assert(CLI && existsSync(CLI), "Set OPENCODE2_CLI to an explicit absolute path to OpenCode 2.0.18")
+  assert(CLI && existsSync(CLI), "Set OPENCODE2_CLI to an explicit absolute path to OpenCode 2.0.22")
   assert(isAbsolute(CLI_INPUT), "OPENCODE2_CLI must be absolute")
   assert(/^[a-f0-9]{64}$/i.test(EXPECTED_SERVER_SHA256), "Set OPENCODE2_EXPECTED_SERVER_SHA256 to the expected frozen bundle hash")
   const relativeEvidence = relative(EVIDENCE_ROOT, EVIDENCE)
@@ -585,7 +585,7 @@ async function main(): Promise<void> {
   const serverCommand = [CLI, "--print-logs", "--log-level", "debug", "serve", "--hostname", "127.0.0.1", "--port", String(serverPort)]
 
   try {
-    assert(versionResult.exitCode === 0 && version.includes("2.0.18"), "Expected pinned OpenCode 2.0.18; got " + version)
+    assert(versionResult.exitCode === 0 && version.includes("2.0.22"), "Expected pinned OpenCode 2.0.22; got " + version)
     const redactedProjectConfig = {
       ...projectConfig,
       provider: {
@@ -801,7 +801,7 @@ async function main(): Promise<void> {
     })
     await writeFile(join(EVIDENCE, "runtime.json"), JSON.stringify(output, null, 2) + "\n")
     await writeFile(join(EVIDENCE, "summary.txt"), [
-      "WHAT WAS TESTED: Native OpenCode 2.0.18 direct primary conversations for all eleven OMO builtin agents, actual model-family prompt rendering, per-agent skill-body isolation, and primary model-policy redirects.",
+      "WHAT WAS TESTED: Native OpenCode 2.0.22 direct primary conversations for all eleven OMO builtin agents, actual model-family prompt rendering, per-agent skill-body isolation, and primary model-policy redirects.",
       "REQUEST ORIGIN: A temporary observer tags native session, agent, model, and request kind; the localhost mock cross-checks these against the expected prompt and isolated native session row, including parent ID.",
       "SCOPE LIMIT: This driver does not claim cross-agent delegation coverage; that is covered by separate delegation/workflow QA receipts.",
       "WHAT WAS OBSERVED: See runtime.json for pass/fail checks and sanitized request summaries; see server.stdout.log and server.stderr.log for redacted host diagnostics.",

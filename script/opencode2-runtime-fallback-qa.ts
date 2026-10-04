@@ -201,7 +201,7 @@ async function waitForHost(host: Host, directory: string): Promise<void> {
     if (host.process.exitCode !== null) throw new Error(`OpenCode exited during startup (${host.process.exitCode}): ${redact(host.stderr)}`)
     try {
       const response = await host.client.server.info()
-      if (response.version.includes("2.0.18")) return
+      if (response.version.includes("2.0.22")) return
       lastError = JSON.stringify(response)
     } catch (error) { lastError = error instanceof Error ? error.message : String(error) }
     await new Promise((resolve) => setTimeout(resolve, 100))
@@ -385,7 +385,7 @@ async function main(): Promise<void> {
     }
     const versionResult = Bun.spawnSync([CLI, "--version"], { cwd: hostCwd, env: cliEnvironment, stdout: "pipe", stderr: "pipe" })
     version = new TextDecoder().decode(versionResult.stdout).trim()
-    assert(versionResult.exitCode === 0 && version.includes("2.0.18"), `Expected pinned OpenCode 2.0.18; got ${version}`)
+    assert(versionResult.exitCode === 0 && version.includes("2.0.22"), `Expected pinned OpenCode 2.0.22; got ${version}`)
     const serverHashAtLaunch = createHash("sha256").update(await readFile(serverPath)).digest("hex")
     assert(serverHashAtLaunch === EXPECTED_SERVER_SHA256, "Frozen server bundle changed before launch")
     await writeFile(join(EVIDENCE, "project-config-redacted.json"), JSON.stringify({

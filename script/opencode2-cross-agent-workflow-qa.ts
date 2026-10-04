@@ -1,5 +1,5 @@
 /**
- * Isolated OpenCode 2.0.18 cross-agent workflow QA.
+ * Isolated OpenCode 2.0.22 cross-agent workflow QA.
  * Requires explicit OPENCODE2_CLI and OPENCODE2_EXPECTED_SERVER_SHA256.
  * Evidence directory must be one direct child of .omo/evidence/.
  */
@@ -775,7 +775,7 @@ async function main(): Promise<void> {
   version = versionResult.stdout.toString().trim()
   const startedAt = new Date().toISOString()
   try {
-    assert(versionResult.exitCode === 0 && version.includes("2.0.18"), "Expected pinned OpenCode 2.0.18; got " + version)
+    assert(versionResult.exitCode === 0 && version.includes("2.0.22"), "Expected pinned OpenCode 2.0.22; got " + version)
     const port = reservePort()
     const serverCommand = [CLI, "--print-logs", "--log-level", "debug", "serve", "--hostname", "127.0.0.1", "--port", String(port)]
     const process = Bun.spawn(serverCommand, { cwd: serverCwd, env, stdout: "pipe", stderr: "pipe" })
@@ -879,7 +879,7 @@ async function main(): Promise<void> {
     const juniorOutputText = await readFile(juniorOutput, "utf8").catch(() => "")
     const parentRequests = requests.filter((request) => request.sessionID === session.id && request.kind === "primary")
     const childRequests = requests.filter((request) => request.role === "child" && request.kind === "primary")
-    checks.hostAndLocalBundle = version.includes("2.0.18") && bundleSha256 === EXPECTED_SERVER_SHA256
+    checks.hostAndLocalBundle = version.includes("2.0.22") && bundleSha256 === EXPECTED_SERVER_SHA256
     checks.localOnlyPreflight = providerIDs.length === 1 && providerIDs[0] === PROVIDER && modelIDs.length === 1 && modelIDs[0] === PROVIDER + "/" + MODEL
       && defaultModel === PROVIDER + "/" + MODEL && mcpNames.length === 0 && probePluginActive && omoPluginActive
     checks.nativeParentOutcome = completed.outcome === "succeeded" && parentText.includes("WORKFLOW_CROSS_CHAIN_PARENT_OK")

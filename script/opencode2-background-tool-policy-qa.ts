@@ -14,7 +14,7 @@ const EVIDENCE_ROOT = resolve(
 const PLUGIN_DIR = resolve(process.env.OPENCODE2_PLUGIN_DIR ?? join(ROOT, "dist", "opencode2"))
 const OPENCODE_BIN = process.env.OPENCODE2_CLI?.trim() ?? ""
 const EXPECTED_BUNDLE_SHA256 = process.env.OPENCODE2_EXPECTED_BUNDLE_SHA256 ?? ""
-const EXPECTED_VERSION = "2.0.18"
+const EXPECTED_VERSION = "2.0.22"
 const EXPECTED_PROVIDER = "omoqa"
 const EXPECTED_MODEL_ID = "background-policy-qa-model"
 const EXPECTED_MODEL = EXPECTED_PROVIDER + "/" + EXPECTED_MODEL_ID
@@ -1369,7 +1369,7 @@ async function main(): Promise<void> {
   }
   try {
     if (!OPENCODE_BIN || !isAbsolute(OPENCODE_BIN) || !existsSync(OPENCODE_BIN)) {
-      throw new Error("Set OPENCODE2_CLI to an existing absolute path for the pinned OpenCode 2.0.18 binary.")
+      throw new Error("Set OPENCODE2_CLI to an existing absolute path for the pinned OpenCode 2.0.22 binary.")
     }
     if (!existsSync(join(PLUGIN_DIR, "server.js"))) throw new Error("Native plugin bundle is missing server.js: " + PLUGIN_DIR)
     attempts.push(await runHostAttempt(

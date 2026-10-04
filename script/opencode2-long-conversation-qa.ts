@@ -1,4 +1,4 @@
-/** Isolated OpenCode 2.0.18 runtime proof for OMO long-conversation behavior (compaction context, limits, recovery). */
+/** Isolated OpenCode 2.0.22 runtime proof for OMO long-conversation behavior (compaction context, limits, recovery). */
 import { readFile, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import {

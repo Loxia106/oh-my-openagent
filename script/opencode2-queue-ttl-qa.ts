@@ -11,7 +11,7 @@ const EVIDENCE_ROOT = resolve(process.env.OPENCODE2_QUEUE_TTL_EVIDENCE_DIR ?? jo
 const PLUGIN_DIR = resolve(process.env.OPENCODE2_PLUGIN_DIR ?? join(ROOT, "dist", "opencode2"))
 const CLI = process.env.OPENCODE2_CLI?.trim() ?? ""
 const EXPECTED_SERVER_SHA256 = process.env.OPENCODE2_EXPECTED_SERVER_SHA256 ?? ""
-const EXPECTED_VERSION = "2.0.18"
+const EXPECTED_VERSION = "2.0.22"
 const PROVIDER = "omoqa"
 const MODEL_ID = "queue-ttl-local-model"
 const MODEL = `${PROVIDER}/${MODEL_ID}`
@@ -363,7 +363,7 @@ function assert(checks: Check[], name: string, passed: boolean, detail?: unknown
 }
 
 async function main(): Promise<void> {
-	if (!isAbsolute(CLI) || !existsSync(CLI)) throw new Error("OPENCODE2_CLI must be an explicit absolute path to the pinned OpenCode 2.0.18 executable.")
+	if (!isAbsolute(CLI) || !existsSync(CLI)) throw new Error("OPENCODE2_CLI must be an explicit absolute path to the pinned OpenCode 2.0.22 executable.")
 	if (!EXPECTED_SERVER_SHA256) throw new Error("OPENCODE2_EXPECTED_SERVER_SHA256 must name the reviewed frozen server bundle.")
 	const serverPath = join(PLUGIN_DIR, "server.js")
 	if (!existsSync(serverPath)) throw new Error(`Native bundle not found: ${serverPath}`)

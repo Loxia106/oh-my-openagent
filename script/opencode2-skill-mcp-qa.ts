@@ -1,4 +1,4 @@
-/** Isolated OpenCode 2.0.18 runtime proof for skill_mcp tools, per-URL cdp instances, prompts and permissions. */
+/** Isolated OpenCode 2.0.22 runtime proof for skill_mcp tools, per-URL cdp instances, prompts and permissions. */
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import {

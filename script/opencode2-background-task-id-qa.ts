@@ -1,4 +1,4 @@
-/** Isolated OpenCode 2.0.18 runtime proof for legacy bg_ background task IDs and supervised unstable-model tasks. */
+/** Isolated OpenCode 2.0.22 runtime proof for legacy bg_ background task IDs and supervised unstable-model tasks. */
 import { readFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import {

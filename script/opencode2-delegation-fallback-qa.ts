@@ -1,5 +1,5 @@
 /**
- * Isolated OpenCode 2.0.18 QA for delegated fallback selection and child-only settings.
+ * Isolated OpenCode 2.0.22 QA for delegated fallback selection and child-only settings.
  *
  * Run only against an explicitly reviewed bundle:
  * OPENCODE2_CLI=/absolute/path/to/opencode \
@@ -326,14 +326,14 @@ function omoConfig(reorderExploreFallbacks: boolean): Record<string, unknown> {
 }
 
 async function main(): Promise<void> {
-	assert(OPENCODE_BIN && existsSync(OPENCODE_BIN) && isAbsolute(CLI_INPUT), "OPENCODE2_CLI must be an existing absolute path to OpenCode 2.0.18")
+	assert(OPENCODE_BIN && existsSync(OPENCODE_BIN) && isAbsolute(CLI_INPUT), "OPENCODE2_CLI must be an existing absolute path to OpenCode 2.0.22")
 	assert(/^[a-f0-9]{64}$/i.test(EXPECTED_SERVER_SHA256), "OPENCODE2_EXPECTED_SERVER_SHA256 must name the reviewed bundle hash")
 	assert(existsSync(join(PLUGIN_DIR, "server.js")), `Missing native plugin bundle ${join(PLUGIN_DIR, "server.js")}`)
 	const serverHash = createHash("sha256").update(await readFile(join(PLUGIN_DIR, "server.js"))).digest("hex")
 	assert(serverHash === EXPECTED_SERVER_SHA256.toLowerCase(), `Bundle hash ${serverHash} does not match the reviewed hash`)
 	const versionProcess = Bun.spawnSync([OPENCODE_BIN, "--version"], { stdout: "pipe", stderr: "pipe" })
 	const version = new TextDecoder().decode(versionProcess.stdout).trim()
-	assert(versionProcess.exitCode === 0 && version.includes("2.0.18"), `Expected OpenCode 2.0.18, got ${version}`)
+	assert(versionProcess.exitCode === 0 && version.includes("2.0.22"), `Expected OpenCode 2.0.22, got ${version}`)
 
 	const runName = `run-${new Date().toISOString().replaceAll(":", "-")}`
 	const runDirectory = join(EVIDENCE_ROOT, runName)
@@ -763,7 +763,7 @@ async function main(): Promise<void> {
 		const sourceSnapshotHash = createHash("sha256").update(JSON.stringify(sourceHashes)).digest("hex")
 		const driverSha256 = createHash("sha256").update(await readFile(join(ROOT, "script/opencode2-delegation-fallback-qa.ts"))).digest("hex")
 		const runtime = {
-			purpose: "Local-only delegated fallback/settings host QA with pinned OpenCode 2.0.18 and bundle hash.",
+			purpose: "Local-only delegated fallback/settings host QA with pinned OpenCode 2.0.22 and bundle hash.",
 			opencodeVersion: version,
 			productionSourceBaseCommit: headResult.stdout.toString().trim(),
 			productionWorkingTreeDirty: statusResult.stdout.toString().trim().length > 0,

@@ -1,4 +1,4 @@
-/** Isolated OpenCode 2.0.18 runtime proof that an active Team recovers after the host process is killed. */
+/** Isolated OpenCode 2.0.22 runtime proof that an active Team recovers after the host process is killed. */
 import { readFile, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import {

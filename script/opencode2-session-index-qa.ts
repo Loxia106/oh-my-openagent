@@ -1,4 +1,4 @@
-/** Isolated OpenCode 2.0.18 runtime proof for project-wide session listing/search through the OMO session index. */
+/** Isolated OpenCode 2.0.22 runtime proof for project-wide session listing/search through the OMO session index. */
 import { mkdir, mkdtemp, readFile, realpath } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"

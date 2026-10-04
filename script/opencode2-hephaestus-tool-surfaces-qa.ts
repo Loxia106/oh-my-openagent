@@ -1,5 +1,5 @@
 /**
- * Local-only OpenCode 2.0.18 host QA for Hephaestus tool workflows.
+ * Local-only OpenCode 2.0.22 host QA for Hephaestus tool workflows.
  *
  * This drives hashline rename/delete through the native apply_patch executor,
  * look_at through a real multimodal-looker child and native read, the
@@ -714,7 +714,7 @@ async function main(): Promise<void> {
 	}
 	const versionResult = Bun.spawnSync([CLI, "--version"], { cwd: serverCwd, env, stdout: "pipe", stderr: "pipe" })
 	const version = versionResult.stdout.toString().trim() || versionResult.stderr.toString().trim()
-	assert(versionResult.exitCode === 0 && version.includes("2.0.18"), `Expected pinned OpenCode 2.0.18; got ${version}`)
+	assert(versionResult.exitCode === 0 && version.includes("2.0.22"), `Expected pinned OpenCode 2.0.22; got ${version}`)
 	const portReservation = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("reserved") })
 	const port = portReservation.port
 	portReservation.stop(true)
@@ -885,7 +885,7 @@ async function main(): Promise<void> {
 			.every((marker) => parentText.includes(marker))
 		const expectedChildRead = child?.tools.some((tool) => tool.name === "read" && tool.status === "completed") === true
 
-		checks.frozenRuntimeAndLocalOnlyCatalog = version.includes("2.0.18") && bundleSha256 === EXPECTED_SERVER_SHA256 &&
+		checks.frozenRuntimeAndLocalOnlyCatalog = version.includes("2.0.22") && bundleSha256 === EXPECTED_SERVER_SHA256 &&
 			providerIDs.join() === PROVIDER && modelIDs.join() === `${PROVIDER}/${MODEL}` && defaultModel === `${PROVIDER}/${MODEL}` &&
 			mcpNames.join() === "lsp" && pluginActive && originProbeActive
 		checks.hephaestusPrimaryAndNativeAgentsContext = parentRow.agent === "hephaestus" && modelRef(parentRow.model) === `${PROVIDER}/${MODEL}` &&
